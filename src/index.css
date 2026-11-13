@@ -3786,3 +3786,75 @@ footer span {
   background: linear-gradient(180deg, #fff 0%, #f9fafb 100%);
 }
 
+
+/* ── CSV Import — status feedback banners ───────────────────── */
+.import-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  margin-top: 16px;
+  font-size: 13px;
+}
+.import-status b {
+  display: block;
+  font-weight: 700;
+  font-size: 13.5px;
+}
+.import-status small {
+  display: block;
+  font-size: 11.5px;
+  opacity: 0.8;
+  margin-top: 2px;
+}
+
+/* Loading */
+.import-status--loading {
+  background: linear-gradient(90deg, #0d305714, #1fbf9c0e);
+  border: 1px solid #0d305730;
+  color: #0d3057;
+}
+.import-status-spinner {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid #0d305730;
+  border-top-color: #0d3057;
+  animation: importSpin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes importSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Success */
+.import-status--success {
+  background: linear-gradient(90deg, #087b7014, #1fbf9c0e);
+  border: 1px solid #087b7030;
+  color: #087b70;
+}
+
+/* Error */
+.import-status--error {
+  background: linear-gradient(90deg, #c9414114, #e2574814);
+  border: 1px solid #c9414130;
+  color: #c94141;
+}
+
+/* Shared icon circle */
+.import-status-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: 800;
+  flex-shrink: 0;
+  background: currentColor;
+  color: #fff;
+}
+.import-status--success .import-status-icon { background: #087b70; }
+.import-status--error .import-status-icon   { background: #c94141; }

@@ -174,6 +174,7 @@ export default function ImportProducts({
     if (!rows.length) return;
     setImporting(true);
     setError("");
+    setResult(null);
     try {
       const summary = await importProducts(rows);
       setResult(summary);
@@ -254,10 +255,34 @@ export default function ImportProducts({
           />
         </div>
 
+        {/* ── Status feedback banner ── */}
+        {importing && (
+          <div className="import-status import-status--loading">
+            <span className="import-status-spinner" />
+            <div>
+              <b>Importing products…</b>
+              <small>Please wait — writing {rows.length} row(s) to your catalogue.</small>
+            </div>
+          </div>
+        )}
+
+        {!importing && result && (
+          <div className="import-status import-status--success">
+            <span className="import-status-icon">✓</span>
+            <div>
+              <b>Import successful!</b>
+              <small>{result.imported} product(s) added · {result.families} new family group(s) · {result.duplicates} duplicate(s) skipped.</small>
+            </div>
+          </div>
+        )}
+
         {error && (
-          <div className="import-error">
-            <Icon name="bell" size={15} />
-            <span>{error}</span>
+          <div className="import-status import-status--error">
+            <span className="import-status-icon">✕</span>
+            <div>
+              <b>Import failed</b>
+              <small>{error}</small>
+            </div>
           </div>
         )}
 
