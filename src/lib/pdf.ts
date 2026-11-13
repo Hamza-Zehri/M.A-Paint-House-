@@ -435,6 +435,17 @@ export function generateInvoicePDF(inv: any, settings: any, returnBlob = false):
   return null;
 }
 
+/** Opens the invoice HTML in a new tab and triggers the browser print dialog. */
+export function printInvoiceHtml(inv: any, settings: any) {
+  const blob = generateInvoicePDF(inv, settings, true) as Blob;
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, "_blank");
+  if (win) {
+    win.onload = () => { win.focus(); win.print(); };
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 /* ------------------------------------------------------------------ */
 /* Payment receipt                                                     */
 /* ------------------------------------------------------------------ */

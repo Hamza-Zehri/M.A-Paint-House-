@@ -3,6 +3,7 @@ import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoney, formatMoneyShort, toPaisa } from "../lib/money";
 import { invoicePdfBlob, invoicePdfName } from "../lib/pdfFile";
+import { printInvoiceHtml } from "../lib/pdf";
 import { sharePdf } from "../lib/share";
 import { toast } from "../lib/dialog";
 import type { Customer, Invoice, Product } from "../lib/types";
@@ -174,7 +175,8 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
         <label>Notes<textarea className="field" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Invoice notes..." /></label>
         <div className="invoice-buttons">
           <button className="btn btn-primary save-wide" disabled={saving} onClick={() => handleSave(false)}>{saving ? "Saving..." : editing ? "Update invoice" : "Save invoice"}</button>
-          <button className="btn btn-secondary" disabled={saving} onClick={() => handleSave(true)}><Icon name="share" /> {editing ? "Update & share PDF" : "Save & share PDF"}</button>
+          <button className="btn btn-secondary" disabled={saving} onClick={() => handleSave(true)}><Icon name="share" /> {editing ? "Update & WhatsApp" : "Save & WhatsApp"}</button>
+          <button className="btn btn-secondary" disabled={!lastInvoice && !editing} onClick={() => { const inv = lastInvoice || editing; if (inv) printInvoiceHtml(inv, settings); }}><Icon name="file" /> Print</button>
           <button className="clear-btn" onClick={() => { if (editing) { onDone?.(); return; } setLines([]); setPaymentReceived(""); setNotes(""); }}>{editing ? "Cancel edit" : "Clear invoice"}</button>
         </div>
         {lastInvoice && (<div style={{ marginTop: 12, padding: 10, background: "var(--teal-soft)", borderRadius: 8 }}><b>Last saved: {lastInvoice.number}</b></div>)}
