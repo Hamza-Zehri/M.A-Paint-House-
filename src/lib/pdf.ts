@@ -346,9 +346,16 @@ export function downloadHtml(html: string, filename: string) {
 /* Invoice                                                             */
 /* ------------------------------------------------------------------ */
 
-export function getInvoiceHtml(inv: any, settings: any, autoPrint = false): string {
+export function getInvoiceHtml(
+  inv: any,
+  settings: any,
+  autoPrint = false,
+  customer?: any,
+  paidOverride?: number
+): string {
   const currency = settings?.currency || "Rs";
-  const due = Math.max(0, (inv.netPayable || 0) - (inv.paymentReceived || 0));
+  const paid = paidOverride !== undefined ? paidOverride : Number(inv.paymentReceived) || 0;
+  const due = Math.max(0, (Number(inv.netPayable) || 0) - paid);
   const isCancelled = inv.status === "cancelled" || inv.status === "void";
   const statusTone = isCancelled ? "danger" : inv.status === "draft" ? "warn" : "ok";
   const statusLabel = isCancelled ? "Cancelled" : inv.status === "draft" ? "Draft" : due > 0 ? "Partially paid" : "Paid";
@@ -372,12 +379,16 @@ export function getInvoiceHtml(inv: any, settings: any, autoPrint = false): stri
     )
     .join("");
 
+  const customerMeta = [customer?.phone, customer?.city, customer?.address].filter(Boolean).join(" · ");
+  const prevBalText = inv.previousBalance ? `Previous balance: ${esc(money(inv.previousBalance, currency))}` : "";
+  const subText = [customerMeta, prevBalText].filter(Boolean).join(" · ") || "Customer account";
+
   const body = `
     <div class="info-grid">
       <div class="info">
         <div class="label">Bill to</div>
-        <div class="big">${esc(inv.customerName)}</div>
-        <div class="sub">Customer account${inv.previousBalance ? ` · Previous balance ${esc(money(inv.previousBalance, currency))}` : ""}</div>
+        <div class="big">${esc(inv.customerName || customer?.name || "Customer")}</div>
+        <div class="sub">${subText}</div>
       </div>
       <div class="info">
         <div class="label">Invoice details</div>
@@ -386,7 +397,7 @@ export function getInvoiceHtml(inv: any, settings: any, autoPrint = false): stri
       </div>
       <div class="info">
         <div class="label">Payment summary</div>
-        <div class="big">${esc(money(inv.paymentReceived || 0, currency))} received</div>
+        <div class="big">${esc(money(paid, currency))} received</div>
         <div class="sub">${due > 0 ? `${esc(money(due, currency))} balance due` : "Account settled in full"}</div>
       </div>
     </div>
@@ -406,7 +417,7 @@ export function getInvoiceHtml(inv: any, settings: any, autoPrint = false): stri
         <div class="row"><span>Subtotal</span><b>${esc(money(inv.subtotal, currency))}</b></div>
         <div class="row"><span>Discount (${esc(inv.discountPercent || 0)}%)</span><b>− ${esc(money(inv.discountAmount, currency))}</b></div>
         <div class="row"><span>Net payable</span><b>${esc(money(inv.netPayable, currency))}</b></div>
-        <div class="row paid"><span>Payment received</span><b>${esc(money(inv.paymentReceived || 0, currency))}</b></div>
+        <div class="row paid"><span>Payment received</span><b>${esc(money(paid, currency))}</b></div>
         <div class="row ${due > 0 ? "due" : "paid"}"><span>Balance due</span><b>${esc(money(due, currency))}</b></div>
         <div class="net"><span>Total payable</span><b>${esc(money(inv.netPayable, currency))}</b></div>
       </div>
@@ -444,16 +455,16 @@ export function getInvoiceHtml(inv: any, settings: any, autoPrint = false): stri
   return html;
 }
 
-export function generateInvoicePDF(inv: any, settings: any, returnBlob = false): any {
-  const html = getInvoiceHtml(inv, settings);
+export function generateInvoicePDF(inv: any, settings: any, returnBlob = false, customer?: any, paidOverride?: number): any {
+  const html = getInvoiceHtml(inv, settings, false, customer, paidOverride);
   if (returnBlob) return new Blob([html], { type: "text/html;charset=utf-8" });
   openDocument(html, `${inv.number || "invoice"}.html`);
   return null;
 }
 
 /** Opens the invoice HTML and triggers the browser print dialog immediately. */
-export function printInvoiceHtml(inv: any, settings: any) {
-  const html = getInvoiceHtml(inv, settings, true);
+export function printInvoiceHtml(inv: any, settings: any, customer?: any, paidOverride?: number) {
+  const html = getInvoiceHtml(inv, settings, true, customer, paidOverride);
 
   // Synchronous window.open avoids popup blockers
   const win = window.open("", "_blank");

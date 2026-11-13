@@ -89,20 +89,28 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
           <table className="large-table">
             <thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Subtotal</th><th>Discount</th><th>Net</th><th>Balance</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {shown.map((i) => (
-                <tr key={i.id}>
-                  <td><b>{i.number}</b></td><td>{i.customerName}</td><td>{i.date}</td><td>{formatMoneyShort(i.subtotal)}</td>
-                  <td className="teal-text">{i.discountPercent}%</td><td><b>{formatMoneyShort(i.netPayable)}</b></td>
-                  <td className={invoiceBalance(i.id) > 0 ? "red-text" : ""}>{formatMoneyShort(invoiceBalance(i.id))}</td><td>{i.status}</td>
-                  <td><div className="row-actions">
-                    <button onClick={() => printInvoiceHtml(i, settings)} title="Print invoice"><Icon name="printer" size={16} /></button>
-                    <button onClick={() => shareInvoice(i)} title="Share on WhatsApp"><Icon name="share" size={16} /></button>
-                    <button onClick={() => onEdit?.(i)} title="Edit invoice"><Icon name="edit" size={16} /></button>
-                    {i.status === "finalized" && <button onClick={() => cancel(i)} title="Cancel invoice"><Icon name="minus" size={16} /></button>}
-                    <button onClick={() => remove(i)} title="Delete invoice"><Icon name="trash" size={16} /></button>
-                  </div></td>
-                </tr>
-              ))}
+              {shown.map((i) => {
+                const customer = customers.find((item) => item.id === i.customerId);
+                const allocated = allocations
+                  .filter((allocation) => allocation.invoiceId === i.id)
+                  .reduce((sum, allocation) => sum + allocation.amount, 0);
+                const paid = Math.max(allocated, i.paymentReceived || 0);
+
+                return (
+                  <tr key={i.id}>
+                    <td><b>{i.number}</b></td><td>{i.customerName}</td><td>{i.date}</td><td>{formatMoneyShort(i.subtotal)}</td>
+                    <td className="teal-text">{i.discountPercent}%</td><td><b>{formatMoneyShort(i.netPayable)}</b></td>
+                    <td className={invoiceBalance(i.id) > 0 ? "red-text" : ""}>{formatMoneyShort(invoiceBalance(i.id))}</td><td>{i.status}</td>
+                    <td><div className="row-actions">
+                      <button onClick={() => printInvoiceHtml(i, settings, customer, paid)} title="Print invoice"><Icon name="printer" size={16} /></button>
+                      <button onClick={() => shareInvoice(i)} title="Share on WhatsApp"><Icon name="share" size={16} /></button>
+                      <button onClick={() => onEdit?.(i)} title="Edit invoice"><Icon name="edit" size={16} /></button>
+                      {i.status === "finalized" && <button onClick={() => cancel(i)} title="Cancel invoice"><Icon name="minus" size={16} /></button>}
+                      <button onClick={() => remove(i)} title="Delete invoice"><Icon name="trash" size={16} /></button>
+                    </div></td>
+                  </tr>
+                );
+              })}
               {shown.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 20 }}>No invoices</td></tr>}
             </tbody>
           </table>
