@@ -1,0 +1,74 @@
+rules_version = '2';
+
+// M.A Paint House — Firestore security rules
+//
+// Every business collection requires a signed-in Firebase Authentication
+// account. The legacy bootstrap account (admin@mapainthouse.app) is blocked at
+// the database layer as well as in the app, so its old credentials cannot read
+// or write any shop data even if someone bypasses the login screen.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isTrustedUser() {
+      return request.auth != null
+        && request.auth.token.email is string
+        && request.auth.token.email.lower() != 'admin@mapainthouse.app';
+    }
+
+    match /settings/{docId} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /customers/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /families/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /pricing/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /products/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /invoices/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /payments/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /allocations/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /ledger/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /expenses/{id} {
+      allow read, write: if isTrustedUser();
+    }
+
+    match /audit/{id} {
+      allow read, create, delete: if isTrustedUser();
+      allow update: if false;
+    }
+
+    // Profiles are managed in the Firebase Console, never by the browser.
+    match /users/{uid} {
+      allow read: if isTrustedUser() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Deny anything not explicitly allowed above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
