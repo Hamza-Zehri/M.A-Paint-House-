@@ -346,7 +346,7 @@ export function downloadHtml(html: string, filename: string) {
 /* Invoice                                                             */
 /* ------------------------------------------------------------------ */
 
-export function generateInvoicePDF(inv: any, settings: any, returnBlob = false): any {
+export function getInvoiceHtml(inv: any, settings: any, autoPrint = false): string {
   const currency = settings?.currency || "Rs";
   const due = Math.max(0, (inv.netPayable || 0) - (inv.paymentReceived || 0));
   const isCancelled = inv.status === "cancelled" || inv.status === "void";
@@ -417,7 +417,7 @@ export function generateInvoicePDF(inv: any, settings: any, returnBlob = false):
       <div class="sign"><div class="line"></div><b>Authorised signature</b>For ${esc(settings?.name || "M.A Paint House")}</div>
     </div>`;
 
-  const html = shell({
+  let html = shell({
     title: "Invoice",
     subtitle: "Sales invoice",
     accent: BRAND.teal,
@@ -430,20 +430,71 @@ export function generateInvoicePDF(inv: any, settings: any, returnBlob = false):
     body,
   });
 
+  if (autoPrint) {
+    html = html.replace(
+      "</body>",
+      `<script>
+        window.addEventListener('load', function() {
+          setTimeout(function() { window.focus(); window.print(); }, 250);
+        });
+      </script></body>`
+    );
+  }
+
+  return html;
+}
+
+export function generateInvoicePDF(inv: any, settings: any, returnBlob = false): any {
+  const html = getInvoiceHtml(inv, settings);
   if (returnBlob) return new Blob([html], { type: "text/html;charset=utf-8" });
   openDocument(html, `${inv.number || "invoice"}.html`);
   return null;
 }
 
-/** Opens the invoice HTML in a new tab and triggers the browser print dialog. */
+/** Opens the invoice HTML and triggers the browser print dialog immediately. */
 export function printInvoiceHtml(inv: any, settings: any) {
-  const blob = generateInvoicePDF(inv, settings, true) as Blob;
-  const url = URL.createObjectURL(blob);
-  const win = window.open(url, "_blank");
+  const html = getInvoiceHtml(inv, settings, true);
+
+  // Synchronous window.open avoids popup blockers
+  const win = window.open("", "_blank");
   if (win) {
-    win.onload = () => { win.focus(); win.print(); };
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    setTimeout(() => {
+      try {
+        win.focus();
+        win.print();
+      } catch (_) {}
+    }, 350);
+    return;
   }
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+
+  // Fallback: hidden iframe print if popups are completely disabled
+  let iframe = document.getElementById("invoice-print-frame") as HTMLIFrameElement;
+  if (!iframe) {
+    iframe = document.createElement("iframe");
+    iframe.id = "invoice-print-frame";
+    iframe.style.position = "fixed";
+    iframe.style.top = "-9999px";
+    iframe.style.left = "-9999px";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "none";
+    document.body.appendChild(iframe);
+  }
+  const doc = iframe.contentWindow?.document;
+  if (doc) {
+    doc.open();
+    doc.write(html);
+    doc.close();
+    setTimeout(() => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch (_) {}
+    }, 400);
+  }
 }
 
 /* ------------------------------------------------------------------ */

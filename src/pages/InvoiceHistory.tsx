@@ -95,7 +95,7 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
                   <td className="teal-text">{i.discountPercent}%</td><td><b>{formatMoneyShort(i.netPayable)}</b></td>
                   <td className={invoiceBalance(i.id) > 0 ? "red-text" : ""}>{formatMoneyShort(invoiceBalance(i.id))}</td><td>{i.status}</td>
                   <td><div className="row-actions">
-                    <button onClick={() => printInvoiceHtml(i, settings)} title="Print invoice"><Icon name="file" size={16} /></button>
+                    <button onClick={() => printInvoiceHtml(i, settings)} title="Print invoice"><Icon name="printer" size={16} /></button>
                     <button onClick={() => shareInvoice(i)} title="Share on WhatsApp"><Icon name="share" size={16} /></button>
                     <button onClick={() => onEdit?.(i)} title="Edit invoice"><Icon name="edit" size={16} /></button>
                     {i.status === "finalized" && <button onClick={() => cancel(i)} title="Cancel invoice"><Icon name="minus" size={16} /></button>}
