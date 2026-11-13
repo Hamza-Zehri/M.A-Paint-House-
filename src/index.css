@@ -1217,8 +1217,9 @@ td b {
 }
 .invoice-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(370px, 0.75fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(390px, 0.75fr);
   min-height: calc(100vh - 89px);
+  align-items: start;
 }
 .catalogue {
   padding: 24px 24px 40px 30px;
@@ -1391,6 +1392,14 @@ td b {
   box-shadow: -8px 0 25px #17304707;
   display: flex;
   flex-direction: column;
+  position: sticky;
+  top: 89px;
+  height: calc(100vh - 89px);
+  max-height: calc(100vh - 89px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
 }
 .invoice-top {
   display: flex;
@@ -2226,10 +2235,16 @@ footer span {
   }
   .invoice-layout {
     grid-template-columns: 1fr;
+    align-items: stretch;
   }
   .invoice-panel {
     border-left: 0;
     border-top: 1px solid var(--line);
+    position: static;
+    top: auto;
+    height: auto;
+    max-height: none;
+    overflow-y: visible;
   }
   .mini-metrics.reports {
     grid-template-columns: repeat(2, 1fr);
