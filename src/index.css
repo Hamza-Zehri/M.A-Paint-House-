@@ -3858,3 +3858,130 @@ footer span {
 }
 .import-status--success .import-status-icon { background: #087b70; }
 .import-status--error .import-status-icon   { background: #c94141; }
+
+/* ── Developer Credit — sidebar bottom tag ───────────────────── */
+.sidebar-dev-credit {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  border-top: 1px solid #ffffff10;
+  font-size: 9.5px;
+  color: #6a8299;
+  letter-spacing: 0.2px;
+}
+.sidebar-dev-credit b {
+  color: #9fd8d0;
+  font-weight: 700;
+}
+.sidebar-dev-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f4b740, #1fbf9c);
+  flex-shrink: 0;
+}
+
+/* ── Developer Credit — main app footer ──────────────────────── */
+.app-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 14px 24px;
+  font-size: 10.5px;
+  color: #8099b0;
+  border-top: 1px solid #e8eef4;
+  margin-top: auto;
+}
+.app-footer-sep { opacity: 0.4; }
+.app-footer-credit { color: #5a7a96; }
+.app-footer-credit b {
+  color: #0d3057;
+  font-weight: 700;
+}
+
+/* ── Developer Credit — login screen (login-credit) ─────────── */
+.login-credit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #e8eef4;
+  font-size: 10px;
+  color: #8099b0;
+}
+.login-credit small { color: #aab8c8; }
+.login-credit b { color: #0d3057; font-weight: 800; font-size: 11px; }
+.login-credit-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #d0dce8, transparent);
+}
+
+/* ── Developer Credit — Settings page card ───────────────────── */
+.settings-credit-section {
+  background: linear-gradient(135deg, #f8fafc 0%, #edf3ff 100%);
+  border: 1px solid #d8e4f0;
+}
+.settings-credit-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.settings-credit-avatar {
+  width: 50px;
+  height: 50px;
+  border-radius: 15px;
+  background: linear-gradient(135deg, #0a1e3b, #0d3057);
+  color: #fff;
+  font-weight: 800;
+  font-size: 15px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  box-shadow: 0 8px 20px #0d305730;
+}
+.settings-credit-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-credit-info small {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #8099b0;
+}
+.settings-credit-info b {
+  font-size: 15px;
+  font-weight: 800;
+  color: #0d3057;
+  letter-spacing: -0.3px;
+}
+.settings-credit-sub {
+  font-size: 10px !important;
+  color: #6a8299 !important;
+  letter-spacing: 0.1px !important;
+  text-transform: none !important;
+}
+.settings-credit-badge {
+  padding: 4px 10px;
+  border-radius: 99px;
+  background: linear-gradient(135deg, #f8c95c, #f97362);
+  color: #1a0800;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.settings-credit-note {
+  margin: 12px 0 0;
+  font-size: 10.5px;
+  color: #8099b0;
+  line-height: 1.6;
+}

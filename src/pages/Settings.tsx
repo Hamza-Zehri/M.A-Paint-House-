@@ -197,6 +197,22 @@ export default function Settings() {
           and delete or disable <b>admin@mapainthouse.app</b>.
         </p>
       </section>
+
+      {/* ── Developer Credit ── */}
+      <section className="settings-section settings-credit-section">
+        <div className="settings-credit-card">
+          <div className="settings-credit-avatar">HA</div>
+          <div className="settings-credit-info">
+            <small>Designed &amp; Developed by</small>
+            <b>Engr. Hamza Asad</b>
+            <small className="settings-credit-sub">Full-Stack Software Engineer · M.A Paint House Account Manager</small>
+          </div>
+          <div className="settings-credit-badge">v1.0</div>
+        </div>
+        <p className="settings-credit-note">
+          Built with React, Firebase &amp; Tailwind CSS. All rights reserved © {new Date().getFullYear()} M.A Paint House, Khuzdar.
+        </p>
+      </section>
     </div>
   );
 }

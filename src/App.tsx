@@ -295,6 +295,10 @@ function Shell() {
           <div><b>{user?.name || "Admin"}</b><small>{user?.role}</small></div>
           <button onClick={() => { doLogout(); }} title="Logout"><Icon name="more" /></button>
         </div>
+        <div className="sidebar-dev-credit">
+          <span className="sidebar-dev-dot" />
+          <span>Dev · <b>Engr. Hamza Asad</b></span>
+        </div>
       </aside>
       <main className="main">
         <header className="topbar">
@@ -307,7 +311,11 @@ function Shell() {
           </div>
         </header>
         {content()}
-        <footer>© {new Date().getFullYear()} M.A Paint House <span>•</span> Secure accounting <span>•</span> Credit: Engr. Hamza Asad</footer>
+        <footer className="app-footer">
+          <span>© {new Date().getFullYear()} M.A Paint House · Khuzdar</span>
+          <span className="app-footer-sep">·</span>
+          <span className="app-footer-credit">Designed &amp; Developed by <b>Engr. Hamza Asad</b></span>
+        </footer>
       </main>
     </div>
   );
