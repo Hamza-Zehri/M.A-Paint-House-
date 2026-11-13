@@ -17,42 +17,7 @@ export default function Dashboard({ go }: { go: (p: any) => void }) {
     <div className="page">
 
       {/* ══════════════════════════════════════════════
-          QUICK-ACTION HERO — New Invoice (top priority)
-      ══════════════════════════════════════════════ */}
-      <div className="dash-new-invoice-hero">
-        <div className="dash-nih-blobs">
-          <span className="dash-nih-blob dash-nih-blob-a" />
-          <span className="dash-nih-blob dash-nih-blob-b" />
-          <span className="dash-nih-blob dash-nih-blob-c" />
-        </div>
-        <div className="dash-nih-left">
-          <span className="dash-nih-badge">
-            <span className="dash-nih-pulse" />
-            Most-used action
-          </span>
-          <h2 className="dash-nih-heading">New Invoice</h2>
-          <p className="dash-nih-sub">Start a sale in one tap — branded PDF straight to WhatsApp.</p>
-        </div>
-        <div className="dash-nih-right">
-          <div className="dash-nih-paint-strip">
-            {HERO_COLOURS.map((c) => <span key={c} style={{ background: c }} />)}
-          </div>
-          <button className="dash-nih-btn" onClick={() => go("invoice")}>
-            <span className="dash-nih-btn-icon"><Icon name="plus" size={26} /></span>
-            <span className="dash-nih-btn-copy">
-              <b>Create Invoice</b>
-              <small>Fastest way to start a sale</small>
-            </span>
-            <Icon name="arrow" size={20} />
-          </button>
-          <button className="dash-nih-secondary" onClick={() => go("payments")}>
-            <Icon name="wallet" size={15} /> Receive Payment
-          </button>
-        </div>
-      </div>
-
-      {/* ══════════════════════════════════════════════
-          EXISTING HERO BANNER
+          MERGED HERO — New Invoice (top priority CTA)
       ══════════════════════════════════════════════ */}
       <section className="dash-hero">
         <div className="dash-hero-blob dash-hero-blob-a" />
@@ -60,10 +25,24 @@ export default function Dashboard({ go }: { go: (p: any) => void }) {
         <div className="dash-hero-blob dash-hero-blob-c" />
 
         <div className="dash-hero-copy">
-          <span className="dash-eyebrow">
-            <i /> M.A Paint House · Khuzdar
-          </span>
-          <h2>Ready to write the next invoice?</h2>
+          {/* Badge + eyebrow combined */}
+          <div className="dash-hero-top-row">
+            <span className="dash-nih-badge">
+              <span className="dash-nih-pulse" />
+              Most-used action
+            </span>
+            <span className="dash-eyebrow">
+              <i /> M.A Paint House · Khuzdar
+            </span>
+          </div>
+
+          {/* Merged heading */}
+          <h2 className="dash-hero-merged-title">
+            <span className="dash-hero-title-gradient">New Invoice</span>
+            <br />
+            <span className="dash-hero-title-sub">Ready to write the next one?</span>
+          </h2>
+
           <p>
             Start a sale in one tap, share a branded PDF directly on WhatsApp, and keep every
             customer ledger in perfect colour.
@@ -73,7 +52,7 @@ export default function Dashboard({ go }: { go: (p: any) => void }) {
             <button className="dash-cta" onClick={() => go("invoice")}>
               <span className="dash-cta-icon"><Icon name="plus" size={21} /></span>
               <span className="dash-cta-copy">
-                <b>New Invoice</b>
+                <b>Create Invoice</b>
                 <small>Fastest way to start a sale</small>
               </span>
               <Icon name="arrow" size={18} />
