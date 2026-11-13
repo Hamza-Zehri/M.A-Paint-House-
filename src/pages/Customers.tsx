@@ -70,6 +70,7 @@ export default function Customers() {
           <h2 style={{ marginTop: 0 }}>{c.name}</h2>
           <p style={{ color: "var(--muted)" }}>{c.phone} • {c.city} • {c.address}</p>
           <div className="mini-metrics" style={{ marginTop: 12 }}>
+            <div><span>Opening balance</span><b>{formatMoneyShort(c.openingBalance)}</b></div>
             <div><span>Total invoiced</span><b>{formatMoneyShort(totalInvoiced)}</b></div>
             <div><span>Total discount</span><b>{formatMoneyShort(totalDiscount)}</b></div>
             <div><span>Total payments</span><b>{formatMoneyShort(totalPaid)}</b></div>
@@ -115,13 +116,14 @@ export default function Customers() {
         )}
         <div className="table-wrap">
           <table className="large-table">
-            <thead><tr><th>Name</th><th>Phone</th><th>City</th><th>Discount</th><th>Balance</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Phone</th><th>City</th><th>Opening Bal.</th><th>Discount</th><th>Balance</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {shown.map((c) => (
                 <tr key={c.id}>
                   <td><b>{c.name}</b></td>
                   <td>{c.phone}</td>
                   <td>{c.city}</td>
+                  <td className={c.openingBalance > 0 ? "red-text" : ""}>{formatMoneyShort(c.openingBalance)}</td>
                   <td>{c.discount}%</td>
                   <td className={customerBalance(c.id) > 0 ? "red-text" : ""}>{formatMoneyShort(customerBalance(c.id))}</td>
                   <td>{c.active ? "Active" : "Inactive"}</td>
