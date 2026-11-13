@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
-import { formatMoneyShort, toPaisa } from "../lib/money";
+import { formatMoneyShort, toPaisa, todayLocalISO } from "../lib/money";
 import { receiptPdfBlob, receiptPdfName } from "../lib/pdfFile";
 import { sharePdf } from "../lib/share";
 import { appConfirm, toast } from "../lib/dialog";
@@ -12,7 +12,7 @@ const METHODS = ["Cash", "Bank transfer", "JazzCash", "EasyPaisa", "Cheque", "Ot
 export default function Payments() {
   const { customers, payments, recordPayment, updatePayment, deletePayment, customerBalance, settings } = useApp();
   const [customerId, setCustomerId] = useState(customers[0]?.id || "");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayLocalISO());
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("Cash");
   const [reference, setReference] = useState("");

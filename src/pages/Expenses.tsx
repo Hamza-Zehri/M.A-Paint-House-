@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
-import { formatMoneyShort, toPaisa } from "../lib/money";
+import { formatMoneyShort, toPaisa, todayLocalISO } from "../lib/money";
 import type { Expense } from "../lib/types";
 
 const CATS = ["Rent", "Electricity", "Transport", "Staff salary", "Shop maintenance", "Other"];
@@ -11,9 +11,9 @@ export default function Expenses() {
   const { expenses, addExpense, updateExpense, deleteExpense } = useApp();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Expense | null>(null);
-  const [form, setForm] = useState({ date: new Date().toISOString().slice(0, 10), category: "Rent", description: "", amount: "", method: "Cash", reference: "", notes: "" });
+  const [form, setForm] = useState({ date: todayLocalISO(), category: "Rent", description: "", amount: "", method: "Cash", reference: "", notes: "" });
 
-  const blank = () => ({ date: new Date().toISOString().slice(0, 10), category: "Rent", description: "", amount: "", method: "Cash", reference: "", notes: "" });
+  const blank = () => ({ date: todayLocalISO(), category: "Rent", description: "", amount: "", method: "Cash", reference: "", notes: "" });
 
   const openNew = () => { setEditing(null); setForm(blank()); setShowForm(true); };
   const openEdit = (e: Expense) => {

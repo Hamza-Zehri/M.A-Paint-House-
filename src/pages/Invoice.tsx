@@ -1,7 +1,7 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
-import { formatMoney, formatMoneyShort, toPaisa } from "../lib/money";
+import { formatMoney, formatMoneyShort, toPaisa, todayLocalISO } from "../lib/money";
 import { invoicePdfBlob, invoicePdfName } from "../lib/pdfFile";
 import { printInvoiceHtml } from "../lib/pdf";
 import { sharePdf } from "../lib/share";
@@ -13,7 +13,7 @@ interface Line { productId: string; qty: number; unitPrice: number; }
 export default function InvoiceBuilder({ initial = null, onDone }: { initial?: Invoice | null; onDone?: () => void }) {
   const { customers, products, families, createInvoice, editInvoice, settings, customerBalance } = useApp();
   const [customerId, setCustomerId] = useState(initial?.customerId || customers[0]?.id || "");
-  const [date, setDate] = useState(initial?.date || new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(initial?.date || todayLocalISO());
   const [query, setQuery] = useState("");
   const [selectedFamily, setSelectedFamily] = useState<string | null>(null);
   const [lines, setLines] = useState<Line[]>(
@@ -25,6 +25,18 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
   const [saving, setSaving] = useState(false);
   const [lastInvoice, setLastInvoice] = useState<any>(null);
   const editing = initial;
+
+  useEffect(() => {
+    if (initial) {
+      setCustomerId(initial.customerId);
+      setDate(initial.date);
+      setLines(initial.items.map((it) => ({ productId: it.productId, qty: it.qty, unitPrice: it.unitPrice })));
+      setDiscountPercent(initial.discountPercent);
+      setNotes(initial.notes || "");
+    } else {
+      setDate(todayLocalISO());
+    }
+  }, [initial]);
 
   const customer = customers.find((c) => c.id === customerId);
   const effectiveDiscount = discountPercent !== null ? discountPercent : (customer?.discount ?? 0);
@@ -86,7 +98,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
         onDone?.();
       } else {
         const inv = await createInvoice({ customerId, date, items, discountPercent: effectiveDiscount, paymentReceived: parseFloat(paymentReceived) || 0, notes, status: "finalized" });
-        setLastInvoice(inv); setLines([]); setPaymentReceived(""); setNotes("");
+        setLastInvoice(inv); setLines([]); setPaymentReceived(""); setNotes(""); setDate(todayLocalISO());
         toast(`Invoice ${inv.number} saved.`, "success");
         if (andShare) await shareInvoicePdf(inv, customer);
       }
@@ -180,7 +192,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
             <button className="btn btn-primary save-wide" disabled={saving} onClick={() => handleSave(false)}>{saving ? "Saving..." : editing ? "Update invoice" : "Save invoice"}</button>
             <button className="btn btn-secondary" disabled={saving} onClick={() => handleSave(true)}><Icon name="share" /> {editing ? "Update & WhatsApp" : "Save & WhatsApp"}</button>
             <button className="btn btn-secondary" disabled={!lastInvoice && !editing} onClick={() => { const inv = lastInvoice || editing; if (inv) printInvoiceHtml(inv, settings); }}><Icon name="printer" /> Print</button>
-            <button className="clear-btn" onClick={() => { if (editing) { onDone?.(); return; } setLines([]); setPaymentReceived(""); setNotes(""); }}>{editing ? "Cancel edit" : "Clear invoice"}</button>
+            <button className="clear-btn" onClick={() => { if (editing) { onDone?.(); return; } setLines([]); setPaymentReceived(""); setNotes(""); setDate(todayLocalISO()); }}>{editing ? "Cancel edit" : "Clear invoice"}</button>
           </div>
           {lastInvoice && (<div style={{ marginTop: 8, padding: 8, background: "var(--teal-soft)", borderRadius: 8, fontSize: 12 }}><b>Last saved: {lastInvoice.number}</b></div>)}
         </div>

@@ -35,3 +35,11 @@ export const uid = (): string => {
   // simple unique id
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 };
+
+/** Returns today's date in local YYYY-MM-DD format (avoids UTC timezone day shifting). */
+export const todayLocalISO = (d = new Date()): string => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
