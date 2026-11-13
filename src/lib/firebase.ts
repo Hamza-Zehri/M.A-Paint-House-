@@ -1,11 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
 import { getAuth } from "firebase/auth";
-import { initializeFirestore, setLogLevel } from "firebase/firestore";
-
-// Suppress harmless internal Firestore warnings (BloomFilter, etc.)
-// that appear in DevTools but do not affect app behaviour.
-setLogLevel("error");
+import { initializeFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCjxZp-I73eKfz0KMhoBVDSBtYbK4L90zQ",
