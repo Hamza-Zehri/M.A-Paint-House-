@@ -116,28 +116,30 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
         </div>
       </section>
       <aside className="invoice-panel">
-        <div className="invoice-top">
-          <div><span>{editing ? "Editing invoice" : "Current invoice"}</span><h2>{editing ? editing.number : `${settings?.invoicePrefix || "INV"}-${(settings?.invoiceCounter || 1000) + 1}`}</h2></div>
-          <div className="date-control"><Icon name="calendar" size={15} /><div><small>Invoice date</small><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ border: "none", background: "transparent", fontWeight: 700 }} /></div></div>
-        </div>
-        {editing && (
-          <div className="edit-banner">
-            <span><Icon name="edit" size={14} /> You are editing {editing.number}. Ledger balances update automatically.</span>
-            <button onClick={() => onDone?.()}>Cancel edit</button>
+        <div className="invoice-top-pane">
+          <div className="invoice-top">
+            <div><span>{editing ? "Editing invoice" : "Current invoice"}</span><h2>{editing ? editing.number : `${settings?.invoicePrefix || "INV"}-${(settings?.invoiceCounter || 1000) + 1}`}</h2></div>
+            <div className="date-control"><Icon name="calendar" size={15} /><div><small>Invoice date</small><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ border: "none", background: "transparent", fontWeight: 700 }} /></div></div>
           </div>
-        )}
-        <div className="invoice-customer">
-          <select value={customerId} onChange={(e) => { setCustomerId(e.target.value); setDiscountPercent(null); }} style={{ flex: 1, padding: 6, borderRadius: 8, border: "1px solid var(--line)" }}>
-            <option value="">Select customer...</option>
-            {customers.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.discount}% discount)</option>)}
-          </select>
-          {customer && <span className="discount-tag">{effectiveDiscount}% discount</span>}
+          {editing && (
+            <div className="edit-banner">
+              <span><Icon name="edit" size={14} /> You are editing {editing.number}. Ledger balances update automatically.</span>
+              <button onClick={() => onDone?.()}>Cancel edit</button>
+            </div>
+          )}
+          <div className="invoice-customer">
+            <select value={customerId} onChange={(e) => { setCustomerId(e.target.value); setDiscountPercent(null); }} style={{ flex: 1, padding: 6, borderRadius: 8, border: "1px solid var(--line)" }}>
+              <option value="">Select customer...</option>
+              {customers.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.discount}% discount)</option>)}
+            </select>
+            {customer && <span className="discount-tag">{effectiveDiscount}% discount</span>}
+          </div>
+          {customer && <div style={{ fontSize: 12, color: "var(--muted)", padding: "4px 0" }}>Previous balance: {formatMoneyShort(customerBalance(customer.id))}</div>}
+          <div style={{ padding: "6px 0" }}>
+            <label style={{ fontSize: 12 }}>Discount % (override) <input type="number" value={effectiveDiscount} onChange={(e) => setDiscountPercent(parseFloat(e.target.value))} style={{ width: 70, marginLeft: 8, padding: 4, borderRadius: 6, border: "1px solid var(--line)" }} /></label>
+          </div>
+          <div className="line-heading"><b>Invoice items</b><span>{lines.length} line items</span></div>
         </div>
-        {customer && <div style={{ fontSize: 12, color: "var(--muted)", padding: "4px 0" }}>Previous balance: {formatMoneyShort(customerBalance(customer.id))}</div>}
-        <div style={{ padding: "6px 0" }}>
-          <label style={{ fontSize: 12 }}>Discount % (override) <input type="number" value={effectiveDiscount} onChange={(e) => setDiscountPercent(parseFloat(e.target.value))} style={{ width: 70, marginLeft: 8, padding: 4, borderRadius: 6, border: "1px solid var(--line)" }} /></label>
-        </div>
-        <div className="line-heading"><b>Invoice items</b><span>{lines.length} line items</span></div>
         <div className="line-items">
           {lines.length === 0 ? (<div className="empty"><Icon name="box" size={30} /><b>No items added</b><span>Select products from the catalogue</span></div>) : (
             lines.map((line) => {
@@ -155,31 +157,33 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
             })
           )}
         </div>
-        <div className="invoice-totals">
-          <div><span>Subtotal</span><b>{formatMoney(subtotal)}</b></div>
-          <div className="discount-row"><span>Customer discount <small>{effectiveDiscount}%</small></span><b>− {formatMoney(discountAmount)}</b></div>
-          <div className="net-total"><span>Net payable</span><strong>{formatMoney(netPayable)}</strong></div>
+        <div className="invoice-bottom-pane">
+          <div className="invoice-totals">
+            <div><span>Subtotal</span><b>{formatMoney(subtotal)}</b></div>
+            <div className="discount-row"><span>Customer discount <small>{effectiveDiscount}%</small></span><b>− {formatMoney(discountAmount)}</b></div>
+            <div className="net-total"><span>Net payable</span><strong>{formatMoney(netPayable)}</strong></div>
+          </div>
+          <div style={{ padding: "6px 0" }}>
+            {!editing && (
+              <>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 3 }}>Payment received now (Rs)</label>
+                <input className="field" type="number" value={paymentReceived} onChange={(e) => setPaymentReceived(e.target.value)} placeholder="0" />
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Balance after: {formatMoney(balanceDue)}</div>
+              </>
+            )}
+            {editing && (
+              <div style={{ fontSize: 11, color: "var(--muted)" }}>Payment received stays at {formatMoney(editing.paymentReceived)}. Record additional payments from the Payments page.</div>
+            )}
+          </div>
+          <label style={{ fontSize: 11.5 }}>Notes<textarea className="field" style={{ minHeight: 46 }} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Invoice notes..." /></label>
+          <div className="invoice-buttons">
+            <button className="btn btn-primary save-wide" disabled={saving} onClick={() => handleSave(false)}>{saving ? "Saving..." : editing ? "Update invoice" : "Save invoice"}</button>
+            <button className="btn btn-secondary" disabled={saving} onClick={() => handleSave(true)}><Icon name="share" /> {editing ? "Update & WhatsApp" : "Save & WhatsApp"}</button>
+            <button className="btn btn-secondary" disabled={!lastInvoice && !editing} onClick={() => { const inv = lastInvoice || editing; if (inv) printInvoiceHtml(inv, settings); }}><Icon name="printer" /> Print</button>
+            <button className="clear-btn" onClick={() => { if (editing) { onDone?.(); return; } setLines([]); setPaymentReceived(""); setNotes(""); }}>{editing ? "Cancel edit" : "Clear invoice"}</button>
+          </div>
+          {lastInvoice && (<div style={{ marginTop: 8, padding: 8, background: "var(--teal-soft)", borderRadius: 8, fontSize: 12 }}><b>Last saved: {lastInvoice.number}</b></div>)}
         </div>
-        <div style={{ padding: "8px 0" }}>
-          {!editing && (
-            <>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Payment received now (Rs)</label>
-              <input className="field" type="number" value={paymentReceived} onChange={(e) => setPaymentReceived(e.target.value)} placeholder="0" />
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Balance after: {formatMoney(balanceDue)}</div>
-            </>
-          )}
-          {editing && (
-            <div style={{ fontSize: 12, color: "var(--muted)" }}>Payment received stays at {formatMoney(editing.paymentReceived)}. Record additional payments from the Payments page.</div>
-          )}
-        </div>
-        <label>Notes<textarea className="field" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Invoice notes..." /></label>
-        <div className="invoice-buttons">
-          <button className="btn btn-primary save-wide" disabled={saving} onClick={() => handleSave(false)}>{saving ? "Saving..." : editing ? "Update invoice" : "Save invoice"}</button>
-          <button className="btn btn-secondary" disabled={saving} onClick={() => handleSave(true)}><Icon name="share" /> {editing ? "Update & WhatsApp" : "Save & WhatsApp"}</button>
-          <button className="btn btn-secondary" disabled={!lastInvoice && !editing} onClick={() => { const inv = lastInvoice || editing; if (inv) printInvoiceHtml(inv, settings); }}><Icon name="printer" /> Print</button>
-          <button className="clear-btn" onClick={() => { if (editing) { onDone?.(); return; } setLines([]); setPaymentReceived(""); setNotes(""); }}>{editing ? "Cancel edit" : "Clear invoice"}</button>
-        </div>
-        {lastInvoice && (<div style={{ marginTop: 12, padding: 10, background: "var(--teal-soft)", borderRadius: 8 }}><b>Last saved: {lastInvoice.number}</b></div>)}
       </aside>
     </div>
   );
