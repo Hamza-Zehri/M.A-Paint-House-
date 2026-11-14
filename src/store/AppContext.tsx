@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { db } from "../lib/db";
-import { seedIfEmpty } from "../lib/seed";
+import { seedIfEmpty, cleanupLegacySeededData } from "../lib/seed";
 import { toPaisa, uid, percentOf } from "../lib/money";
 import { currentUser, logout as doLogout, waitForAuth, isDefaultAdminEmail } from "../lib/auth";
 import type { BusinessSettings, Customer, Product, ProductFamily, FamilyPricing, Invoice, InvoiceItem, Payment, PaymentAllocation, LedgerEntry, Expense, User, AuditLog } from "../lib/types";
@@ -167,6 +167,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             localStorage.setItem("maph_seeded", "1");
           } catch (e) { console.error(e); }
         }
+        try {
+          await cleanupLegacySeededData();
+        } catch (e) { console.error(e); }
         await refresh();
       } catch (e) { console.error(e); }
     }

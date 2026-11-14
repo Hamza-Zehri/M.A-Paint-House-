@@ -1,7 +1,6 @@
 import { db } from "./db";
-import { toPaisa, uid } from "./money";
-import { hashPassword } from "./auth";
-import type { Customer, Product, ProductFamily, FamilyPricing, BusinessSettings, User } from "./types";
+import { toPaisa } from "./money";
+import type { BusinessSettings } from "./types";
 
 const FAMILIES: { name: string; drum: number; gallon: number; quartar: number; codes: string[] }[] = [
   { name: "Aqua Matt", drum: 21500, gallon: 5700, quartar: 1500, codes: Array.from({ length: 54 }, (_, i) => String(401 + i)) },
@@ -13,6 +12,25 @@ const FAMILIES: { name: string; drum: number; gallon: number; quartar: number; c
   { name: "Budget Distemper", drum: 8000, gallon: 2200, quartar: 600, codes: ["701"] },
   { name: "Eco Star Emulsion", drum: 16000, gallon: 4200, quartar: 1150, codes: ["801","802"] },
 ];
+
+export async function cleanupLegacySeededData() {
+  try {
+    const bashir = await db.customers.get("cust-bashir-kalat");
+    if (bashir) {
+      await db.customers.delete("cust-bashir-kalat");
+    }
+    const legacyLedger = await db.ledger.get("ledger-open-bashir");
+    if (legacyLedger) {
+      await db.ledger.delete("ledger-open-bashir");
+    }
+    const entries = await db.ledger.where("customerId").equals("cust-bashir-kalat").toArray();
+    for (const entry of entries) {
+      await db.ledger.delete(entry.id);
+    }
+  } catch (e) {
+    console.error("Cleanup legacy data error:", e);
+  }
+}
 
 export async function seedIfEmpty() {
   const settingsCount = await db.settings.count();
@@ -26,13 +44,6 @@ export async function seedIfEmpty() {
       taxEnabled: false, taxRate: 0,
     };
     await db.settings.put(settings);
-  }
-
-  const existingBashir = await db.customers.get("cust-bashir-kalat");
-  if (!existingBashir) {
-    const bashir: Customer = { id: "cust-bashir-kalat", name: "Bashir Kalat", phone: "+92 300 1111111", whatsapp: "+92 300 1111111", address: "Kalat", city: "Kalat", openingBalance: toPaisa(201920), discount: 26, notes: "Existing customer", createdAt: new Date().toISOString(), active: true };
-    await db.customers.put(bashir);
-    await db.ledger.put({ id: "ledger-open-bashir", customerId: bashir.id, date: new Date().toISOString().slice(0, 10), type: "opening", reference: "OPEN", description: "Opening balance", debit: bashir.openingBalance, credit: 0, balance: bashir.openingBalance, createdAt: new Date().toISOString() });
   }
 
   const famCount = await db.families.count();

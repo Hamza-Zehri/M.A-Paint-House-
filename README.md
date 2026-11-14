@@ -189,7 +189,6 @@ firebase.json             Firestore + Hosting configuration
 The original M.A Paint House data is preserved:
 
 - Business name, address and contact details
-- Customer **Bashir Kalat** with the original **Rs 201,920** opening balance
 - Paint families and their Drum / Gallon / Quartar price lists
 - Colour-code products and accessories
 
