@@ -24,6 +24,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
   const [notes, setNotes] = useState(initial?.notes || "");
   const [saving, setSaving] = useState(false);
   const [lastInvoice, setLastInvoice] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState<"catalogue" | "invoice">(initial ? "invoice" : "catalogue");
   const editing = initial;
 
   useEffect(() => {
@@ -33,6 +34,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
       setLines(initial.items.map((it) => ({ productId: it.productId, qty: it.qty, unitPrice: it.unitPrice })));
       setDiscountPercent(initial.discountPercent);
       setNotes(initial.notes || "");
+      setActiveTab("invoice");
     } else {
       setDate(todayLocalISO());
     }
@@ -49,6 +51,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
       if (existing) return cur.map((l) => l.productId === p.id ? { ...l, qty: l.qty + 1 } : l);
       return [...cur, { productId: p.id, qty: 1, unitPrice: p.price }];
     });
+    toast(`Added ${p.name}`, "info");
   };
 
   const updateQty = (pid: string, qty: number) => setLines((cur) => cur.map((l) => l.productId === pid ? { ...l, qty: Math.max(1, qty) } : l));
@@ -85,8 +88,16 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
   };
 
   const handleSave = async (andShare = false) => {
-    if (!customerId) { toast("Select a customer.", "error"); return; }
-    if (lines.length === 0) { toast("Add at least one product.", "error"); return; }
+    if (!customerId) {
+      setActiveTab("invoice");
+      toast("Select a customer.", "error");
+      return;
+    }
+    if (lines.length === 0) {
+      setActiveTab("catalogue");
+      toast("Add at least one product.", "error");
+      return;
+    }
     setSaving(true);
     try {
       const items = lines.map((l) => ({ productId: l.productId, qty: l.qty, unitPrice: l.unitPrice / 100 }));
@@ -107,96 +118,395 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
   };
 
   return (
-    <div className="invoice-layout">
-      <section className="catalogue">
-        <div className="catalogue-head"><div><h2>Product catalogue</h2><p>Click a product to add it to the invoice</p></div><span>{filtered.length} products</span></div>
-        <div className="product-search"><Icon name="search" size={18} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search product name or category..." /></div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "8px 0" }}>
-          <button className={`btn ${selectedFamily === null ? "btn-primary" : "btn-secondary"}`} onClick={() => setSelectedFamily(null)}>All families</button>
-          {families.filter((f) => f.status === "active").map((f) => (
-            <button className={`btn ${selectedFamily === f.id ? "btn-primary" : "btn-secondary"}`} key={f.id} onClick={() => setSelectedFamily(f.id)}>{f.name}</button>
-          ))}
-        </div>
-        <div className="product-grid">
-          {filtered.map((p) => (
-            <button className="product-card" key={p.id} onClick={() => addProduct(p)}>
-              <div className="paint-can" style={{ "--paint": "#16796f" } as React.CSSProperties}><span /></div>
-              <div className="product-info"><small>{p.category}</small><h3>{p.name}</h3><span>{p.code} • {p.size}</span><strong>{formatMoneyShort(p.price)}</strong></div>
-              <span className="add-circle"><Icon name="plus" size={16} /></span>
-            </button>
-          ))}
-        </div>
-      </section>
-      <aside className="invoice-panel">
-        <div className="invoice-top-pane">
-          <div className="invoice-top">
-            <div><span>{editing ? "Editing invoice" : "Current invoice"}</span><h2>{editing ? editing.number : `${settings?.invoicePrefix || "INV"}-${(settings?.invoiceCounter || 1000) + 1}`}</h2></div>
-            <div className="date-control"><Icon name="calendar" size={15} /><div><small>Invoice date</small><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ border: "none", background: "transparent", fontWeight: 700 }} /></div></div>
-          </div>
-          {editing && (
-            <div className="edit-banner">
-              <span><Icon name="edit" size={14} /> You are editing {editing.number}. Ledger balances update automatically.</span>
-              <button onClick={() => onDone?.()}>Cancel edit</button>
+    <div className="invoice-container">
+      {/* Mobile view switcher tabs */}
+      <div className="invoice-mobile-tabs" role="tablist" aria-label="Invoice navigation">
+        <button
+          role="tab"
+          aria-selected={activeTab === "catalogue"}
+          className={`invoice-tab-btn ${activeTab === "catalogue" ? "active" : ""}`}
+          onClick={() => setActiveTab("catalogue")}
+        >
+          <Icon name="box" size={17} />
+          <span>Product Catalogue ({filtered.length})</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={activeTab === "invoice"}
+          className={`invoice-tab-btn ${activeTab === "invoice" ? "active" : ""}`}
+          onClick={() => setActiveTab("invoice")}
+        >
+          <Icon name="receipt" size={17} />
+          <span>Current Invoice</span>
+          {lines.length > 0 && (
+            <span className="invoice-tab-badge">{lines.length} · {formatMoneyShort(netPayable)}</span>
+          )}
+        </button>
+      </div>
+
+      <div className={`invoice-layout ${activeTab === "invoice" ? "show-invoice-only" : "show-catalogue-only"}`}>
+        {/* Left Side: Product Catalogue */}
+        <section className="catalogue">
+          <div className="catalogue-head">
+            <div>
+              <h2>Product catalogue</h2>
+              <p>Click any product to add it directly to current invoice</p>
             </div>
-          )}
-          <div className="invoice-customer">
-            <select value={customerId} onChange={(e) => { setCustomerId(e.target.value); setDiscountPercent(null); }} style={{ flex: 1, padding: 6, borderRadius: 8, border: "1px solid var(--line)" }}>
-              <option value="">Select customer...</option>
-              {customers.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.discount}% discount)</option>)}
-            </select>
-            {customer && <span className="discount-tag">{effectiveDiscount}% discount</span>}
+            <span className="catalogue-count-badge">{filtered.length} products</span>
           </div>
-          {customer && <div style={{ fontSize: 12, color: "var(--muted)", padding: "4px 0" }}>Previous balance: {formatMoneyShort(customerBalance(customer.id))}</div>}
-          <div style={{ padding: "6px 0" }}>
-            <label style={{ fontSize: 12 }}>Discount % (override) <input type="number" value={effectiveDiscount} onChange={(e) => setDiscountPercent(parseFloat(e.target.value))} style={{ width: 70, marginLeft: 8, padding: 4, borderRadius: 6, border: "1px solid var(--line)" }} /></label>
+
+          <div className="product-search">
+            <Icon name="search" size={18} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search product name, category, or code..."
+              aria-label="Search products"
+            />
+            {query && (
+              <button
+                type="button"
+                className="search-clear-btn"
+                onClick={() => setQuery("")}
+                aria-label="Clear search"
+              >
+                ✕
+              </button>
+            )}
           </div>
-          <div className="line-heading"><b>Invoice items</b><span>{lines.length} line items</span></div>
-        </div>
-        <div className="line-items">
-          {lines.length === 0 ? (<div className="empty"><Icon name="box" size={30} /><b>No items added</b><span>Select products from the catalogue</span></div>) : (
-            lines.map((line) => {
-              const p = products.find((x) => x.id === line.productId)!;
+
+          <div className="catalogue-families-scroll">
+            <button
+              type="button"
+              className={`family-pill ${selectedFamily === null ? "active" : ""}`}
+              onClick={() => setSelectedFamily(null)}
+            >
+              All families
+            </button>
+            {families.filter((f) => f.status === "active").map((f) => (
+              <button
+                type="button"
+                className={`family-pill ${selectedFamily === f.id ? "active" : ""}`}
+                key={f.id}
+                onClick={() => setSelectedFamily(f.id)}
+              >
+                {f.name}
+              </button>
+            ))}
+          </div>
+
+          <div className="product-grid">
+            {filtered.map((p) => {
+              const inCart = lines.find((l) => l.productId === p.id);
               return (
-                <div className="line-item" key={line.productId}>
-                  <div className="line-title"><div><b>{p.name}</b><span>{p.size} • {formatMoney(line.unitPrice)} each</span></div><button onClick={() => removeLine(line.productId)}><Icon name="trash" size={16} /></button></div>
-                  <div className="line-bottom">
-                    <div className="stepper"><button onClick={() => updateQty(line.productId, line.qty - 1)}><Icon name="minus" size={13} /></button><input type="number" value={line.qty} onChange={(e) => updateQty(line.productId, parseInt(e.target.value) || 1)} style={{ width: 40, textAlign: "center", border: "none", fontWeight: 700 }} /><button onClick={() => updateQty(line.productId, line.qty + 1)}><Icon name="plus" size={13} /></button></div>
-                    <input type="number" value={line.unitPrice / 100} onChange={(e) => updatePrice(line.productId, parseFloat(e.target.value) || 0)} style={{ width: 90, padding: 4, borderRadius: 6, border: "1px solid var(--line)" }} />
-                    <strong>{formatMoney(line.unitPrice * line.qty)}</strong>
+                <button
+                  type="button"
+                  className={`product-card ${inCart ? "in-cart" : ""}`}
+                  key={p.id}
+                  onClick={() => addProduct(p)}
+                >
+                  <div className="paint-can" style={{ "--paint": "#16796f" } as React.CSSProperties}>
+                    <span />
                   </div>
-                </div>
+                  <div className="product-info">
+                    <small>{p.category || p.brand}</small>
+                    <h3>{p.name}</h3>
+                    <span>{p.code} • {p.size}</span>
+                    <strong>{formatMoneyShort(p.price)}</strong>
+                  </div>
+                  <span className="add-circle">
+                    {inCart ? <b>{inCart.qty}</b> : <Icon name="plus" size={16} />}
+                  </span>
+                </button>
               );
-            })
-          )}
-        </div>
-        <div className="invoice-bottom-pane">
-          <div className="invoice-totals">
-            <div><span>Subtotal</span><b>{formatMoney(subtotal)}</b></div>
-            <div className="discount-row"><span>Customer discount <small>{effectiveDiscount}%</small></span><b>− {formatMoney(discountAmount)}</b></div>
-            <div className="net-total"><span>Net payable</span><strong>{formatMoney(netPayable)}</strong></div>
-          </div>
-          <div style={{ padding: "6px 0" }}>
-            {!editing && (
-              <>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 3 }}>Payment received now (Rs)</label>
-                <input className="field" type="number" value={paymentReceived} onChange={(e) => setPaymentReceived(e.target.value)} placeholder="0" />
-                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Balance after: {formatMoney(balanceDue)}</div>
-              </>
+            })}
+            {filtered.length === 0 && (
+              <div className="catalogue-empty">
+                <Icon name="search" size={32} />
+                <p>No products matching &ldquo;{query}&rdquo;</p>
+                <button className="btn btn-secondary" onClick={() => { setQuery(""); setSelectedFamily(null); }}>
+                  Reset filters
+                </button>
+              </div>
             )}
+          </div>
+        </section>
+
+        {/* Right Side: Current Invoice Panel */}
+        <aside className="invoice-panel">
+          <div className="invoice-top-pane">
+            <div className="invoice-top">
+              <div>
+                <span className="invoice-panel-label">{editing ? "Editing invoice" : "Current invoice"}</span>
+                <h2>{editing ? editing.number : `${settings?.invoicePrefix || "INV"}-${(settings?.invoiceCounter || 1000) + 1}`}</h2>
+              </div>
+              <div className="date-control">
+                <Icon name="calendar" size={15} />
+                <div>
+                  <small>Date</small>
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                    aria-label="Invoice date"
+                  />
+                </div>
+              </div>
+            </div>
+
             {editing && (
-              <div style={{ fontSize: 11, color: "var(--muted)" }}>Payment received stays at {formatMoney(editing.paymentReceived)}. Record additional payments from the Payments page.</div>
+              <div className="edit-banner">
+                <span><Icon name="edit" size={14} /> Editing {editing.number}. Ledgers update automatically.</span>
+                <button onClick={() => onDone?.()}>Cancel edit</button>
+              </div>
+            )}
+
+            <div className="invoice-customer-box">
+              <label htmlFor="inv-customer-select">Customer</label>
+              <div className="invoice-customer-row">
+                <select
+                  id="inv-customer-select"
+                  value={customerId}
+                  onChange={(e) => { setCustomerId(e.target.value); setDiscountPercent(null); }}
+                  className="invoice-customer-select"
+                >
+                  <option value="">Select customer...</option>
+                  {customers.filter((c) => c.active).map((c) => (
+                    <option key={c.id} value={c.id}>{c.name} ({c.discount}% discount)</option>
+                  ))}
+                </select>
+                {customer && <span className="discount-tag">{effectiveDiscount}% discount</span>}
+              </div>
+              {customer && (
+                <div className="customer-prev-balance">
+                  Previous balance: <b>{formatMoneyShort(customerBalance(customer.id))}</b>
+                </div>
+              )}
+            </div>
+
+            <div className="discount-override-row">
+              <label>
+                Discount % override
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={effectiveDiscount}
+                  onChange={(e) => setDiscountPercent(parseFloat(e.target.value) || 0)}
+                />
+              </label>
+            </div>
+
+            <div className="line-heading">
+              <b>Invoice items</b>
+              <span>{lines.length} {lines.length === 1 ? "item" : "items"}</span>
+            </div>
+          </div>
+
+          <div className="line-items">
+            {lines.length === 0 ? (
+              <div className="empty">
+                <Icon name="box" size={32} />
+                <b>No items added yet</b>
+                <span>Tap any product from catalogue to add to this invoice</span>
+                <button
+                  type="button"
+                  className="btn btn-secondary invoice-mobile-browse-btn"
+                  onClick={() => setActiveTab("catalogue")}
+                >
+                  Browse Products Catalogue
+                </button>
+              </div>
+            ) : (
+              lines.map((line) => {
+                const p = products.find((x) => x.id === line.productId);
+                if (!p) return null;
+                return (
+                  <div className="line-item" key={line.productId}>
+                    <div className="line-title">
+                      <div>
+                        <b>{p.name}</b>
+                        <span>{p.size} • {formatMoney(line.unitPrice)} each</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="line-delete-btn"
+                        onClick={() => removeLine(line.productId)}
+                        aria-label={`Remove ${p.name}`}
+                      >
+                        <Icon name="trash" size={16} />
+                      </button>
+                    </div>
+
+                    <div className="line-bottom">
+                      <div className="stepper">
+                        <button
+                          type="button"
+                          onClick={() => updateQty(line.productId, line.qty - 1)}
+                          aria-label="Decrease quantity"
+                        >
+                          <Icon name="minus" size={13} />
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          value={line.qty}
+                          onChange={(e) => updateQty(line.productId, parseInt(e.target.value) || 1)}
+                          aria-label="Quantity"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateQty(line.productId, line.qty + 1)}
+                          aria-label="Increase quantity"
+                        >
+                          <Icon name="plus" size={13} />
+                        </button>
+                      </div>
+
+                      <div className="line-price-edit">
+                        <small>Price</small>
+                        <input
+                          type="number"
+                          value={line.unitPrice / 100}
+                          onChange={(e) => updatePrice(line.productId, parseFloat(e.target.value) || 0)}
+                          aria-label="Unit price"
+                        />
+                      </div>
+
+                      <strong className="line-total-amount">
+                        {formatMoney(line.unitPrice * line.qty)}
+                      </strong>
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
-          <label style={{ fontSize: 11.5 }}>Notes<textarea className="field" style={{ minHeight: 46 }} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Invoice notes..." /></label>
-          <div className="invoice-buttons">
-            <button className="btn btn-primary save-wide" disabled={saving} onClick={() => handleSave(false)}>{saving ? "Saving..." : editing ? "Update invoice" : "Save invoice"}</button>
-            <button className="btn btn-secondary" disabled={saving} onClick={() => handleSave(true)}><Icon name="share" /> {editing ? "Update & WhatsApp" : "Save & WhatsApp"}</button>
-            <button className="btn btn-secondary" disabled={!lastInvoice && !editing} onClick={() => { const inv = lastInvoice || editing; if (inv) printInvoiceHtml(inv, settings); }}><Icon name="printer" /> Print</button>
-            <button className="clear-btn" onClick={() => { if (editing) { onDone?.(); return; } setLines([]); setPaymentReceived(""); setNotes(""); setDate(todayLocalISO()); }}>{editing ? "Cancel edit" : "Clear invoice"}</button>
+
+          <div className="invoice-bottom-pane">
+            <div className="invoice-totals">
+              <div>
+                <span>Subtotal</span>
+                <b>{formatMoney(subtotal)}</b>
+              </div>
+              <div className="discount-row">
+                <span>Customer discount <small>{effectiveDiscount}%</small></span>
+                <b>− {formatMoney(discountAmount)}</b>
+              </div>
+              <div className="net-total">
+                <span>Net payable</span>
+                <strong>{formatMoney(netPayable)}</strong>
+              </div>
+            </div>
+
+            <div className="invoice-payment-block">
+              {!editing && (
+                <>
+                  <label htmlFor="payment-received-input">Payment received now (Rs)</label>
+                  <input
+                    id="payment-received-input"
+                    className="field"
+                    type="number"
+                    value={paymentReceived}
+                    onChange={(e) => setPaymentReceived(e.target.value)}
+                    placeholder="0"
+                  />
+                  <div className="balance-after-pill">
+                    Balance after invoice: <b>{formatMoney(balanceDue)}</b>
+                  </div>
+                </>
+              )}
+              {editing && (
+                <div className="editing-payment-note">
+                  Payment received remains at {formatMoney(editing.paymentReceived)}.
+                </div>
+              )}
+            </div>
+
+            <div className="invoice-notes-block">
+              <label htmlFor="invoice-notes-input">Notes &amp; comments</label>
+              <textarea
+                id="invoice-notes-input"
+                className="field"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Optional invoice notes, delivery remarks..."
+                rows={2}
+              />
+            </div>
+
+            <div className="invoice-buttons">
+              <button
+                type="button"
+                className="btn btn-primary save-wide"
+                disabled={saving}
+                onClick={() => handleSave(false)}
+              >
+                <Icon name="check" size={16} />
+                <span>{saving ? "Saving..." : editing ? "Update Invoice" : "Save Invoice"}</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-whatsapp"
+                disabled={saving}
+                onClick={() => handleSave(true)}
+              >
+                <Icon name="share" size={16} />
+                <span>{editing ? "Update & WhatsApp" : "Save & WhatsApp"}</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={!lastInvoice && !editing}
+                onClick={() => { const inv = lastInvoice || editing; if (inv) printInvoiceHtml(inv, settings); }}
+              >
+                <Icon name="printer" size={16} />
+                <span>Print</span>
+              </button>
+              <button
+                type="button"
+                className="clear-btn"
+                onClick={() => {
+                  if (editing) { onDone?.(); return; }
+                  setLines([]);
+                  setPaymentReceived("");
+                  setNotes("");
+                  setDate(todayLocalISO());
+                }}
+              >
+                {editing ? "Cancel Edit" : "Clear All Items"}
+              </button>
+            </div>
+
+            {lastInvoice && (
+              <div className="invoice-last-saved">
+                <b>Saved: {lastInvoice.number}</b> · {formatMoneyShort(lastInvoice.netPayable)}
+              </div>
+            )}
           </div>
-          {lastInvoice && (<div style={{ marginTop: 8, padding: 8, background: "var(--teal-soft)", borderRadius: 8, fontSize: 12 }}><b>Last saved: {lastInvoice.number}</b></div>)}
+        </aside>
+      </div>
+
+      {/* Floating cart bar on mobile when viewing catalogue */}
+      {activeTab === "catalogue" && lines.length > 0 && (
+        <div className="invoice-floating-cart">
+          <div className="floating-cart-summary">
+            <span className="floating-cart-badge">{lines.length}</span>
+            <div>
+              <b>{lines.length} {lines.length === 1 ? "item" : "items"} added</b>
+              <small>Net: {formatMoney(netPayable)}</small>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="floating-cart-btn"
+            onClick={() => setActiveTab("invoice")}
+          >
+            <span>Current Invoice</span>
+            <Icon name="arrow" size={16} />
+          </button>
         </div>
-      </aside>
+      )}
     </div>
   );
 }

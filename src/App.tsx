@@ -81,8 +81,6 @@ function LoginScreen() {
     setLoading(true); setErr("");
     try {
       await login(u, p);
-      // Reload so Firestore starts with the signed-in token. This avoids
-      // the SDK hanging on its first request after a fresh sign-in.
       window.location.reload();
       return;
     } catch (e: any) {
@@ -236,42 +234,68 @@ function LoginScreen() {
 }
 
 function Shell() {
-  const { ready, user, doLogout, refresh } = useApp();
+  const { ready, user, doLogout } = useApp();
   const [page, setPage] = useState<Page>("dashboard");
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   const [splashDone, setSplashDone] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
   useEffect(() => {
     const t = setTimeout(() => setSplashDone(true), 950);
     return () => clearTimeout(t);
   }, []);
+
+  // Close mobile drawer on escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileMenuOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   if (!ready || !splashDone) return <Splash message={ready ? "Almost ready" : "Preparing your workspace"} />;
   if (!user) return <LoginScreen />;
+
   const go = (next: Page) => {
     if (next === "invoice") setEditingInvoice(null);
     setPage(next);
+    setMobileMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
   const content = () => {
     switch (page) {
-      case "dashboard": return <Dashboard go={setPage} />;
+      case "dashboard": return <Dashboard go={go} />;
       case "customers": return <Customers />;
       case "families": return <ProductFamilies />;
       case "allproducts": return <AllProducts />;
       case "pricing": return <PriceManagement />;
-      case "import": return <ImportProducts onNavigate={(next) => setPage(next)} />;
-      case "invoice": return <InvoiceBuilder initial={editingInvoice} onDone={() => { setEditingInvoice(null); setPage("history"); }} />;
-      case "history": return <InvoiceHistory onEdit={(inv) => { setEditingInvoice(inv); setPage("invoice"); }} />;
+      case "import": return <ImportProducts onNavigate={(next) => go(next as Page)} />;
+      case "invoice": return <InvoiceBuilder initial={editingInvoice} onDone={() => { setEditingInvoice(null); go("history"); }} />;
+      case "history": return <InvoiceHistory onEdit={(inv) => { setEditingInvoice(inv); go("invoice"); }} />;
       case "payments": return <Payments />;
       case "ledger": return <Ledger />;
       case "reports": return <Reports />;
       case "settings": return <Settings />;
     }
   };
+
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div className={`app-shell ${mobileMenuOpen ? "drawer-open" : ""}`}>
+      {/* Mobile Drawer Backdrop */}
+      <div
+        className={`sidebar-backdrop ${mobileMenuOpen ? "active" : ""}`}
+        onClick={() => setMobileMenuOpen(false)}
+        aria-hidden="true"
+      />
+
+      <aside className={`sidebar ${mobileMenuOpen ? "open" : ""}`}>
         <div className="brand">
           <div className="brand-mark"><span>M</span></div>
-          <div><b>M.A Paint House</b><small>Account Manager</small>
+          <div className="brand-text">
+            <b>M.A Paint House</b>
+            <small>Account Manager</small>
             <div className="sidebar-swatches" aria-hidden="true">
               <span style={{ background: "#f97362" }} />
               <span style={{ background: "#f4b740" }} />
@@ -280,43 +304,147 @@ function Shell() {
               <span style={{ background: "#9b6cf2" }} />
             </div>
           </div>
+          <button
+            type="button"
+            className="sidebar-close-btn"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-label="Close navigation menu"
+          >
+            <Icon name="close" size={20} />
+          </button>
         </div>
+
         <nav>
           {nav.map((item) => (
-            <button className={`${page === item.id ? "active" : ""} ${item.id === "invoice" ? "nav-invoice-btn" : ""}`} onClick={() => go(item.id)} key={item.id}>
-              <Icon name={item.icon} />
+            <button
+              className={`${page === item.id ? "active" : ""} ${item.id === "invoice" ? "nav-invoice-btn" : ""}`}
+              onClick={() => go(item.id)}
+              key={item.id}
+            >
+              <Icon name={item.icon} size={18} />
               <span>{item.label}</span>
               {item.id === "invoice" && <i>+</i>}
             </button>
           ))}
         </nav>
+
         <div className="profile">
           <div className="profile-avatar">MA</div>
-          <div><b>{user?.name || "Admin"}</b><small>{user?.role}</small></div>
-          <button onClick={() => { doLogout(); }} title="Logout"><Icon name="more" /></button>
+          <div className="profile-info">
+            <b>{user?.name || "Admin"}</b>
+            <small>{user?.role}</small>
+          </div>
+          <button
+            type="button"
+            className="sidebar-logout-btn"
+            onClick={() => { setMobileMenuOpen(false); doLogout(); }}
+            title="Sign out of account"
+            aria-label="Sign out"
+          >
+            <Icon name="more" size={17} />
+          </button>
         </div>
+
         <div className="sidebar-dev-credit">
           <span className="sidebar-dev-dot" />
           <span>Dev · <b>Engr. Hamza Asad</b></span>
         </div>
       </aside>
+
       <main className="main">
         <header className="topbar">
-          <div><h1>M.A Paint House</h1><p>Business management & customer accounting</p></div>
-          <div className="top-actions">
-            <button className="btn top-new-invoice-vivid" onClick={() => go("invoice")} title="Create a new invoice">
-              <Icon name="plus" size={17} /> New Invoice
+          <div className="topbar-left">
+            <button
+              type="button"
+              className="mobile-menu-toggle"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Open navigation menu"
+            >
+              <Icon name="menu" size={22} />
             </button>
-            <div className="date-pill"><Icon name="calendar" size={16} /><span>{new Date().toLocaleDateString("en-PK", { weekday: "long", day: "numeric", month: "long" })}</span></div>
+            <div className="topbar-title-block">
+              <h1>M.A Paint House</h1>
+              <p>Business management &amp; customer accounting</p>
+            </div>
+          </div>
+
+          <div className="top-actions">
+            <button
+              className="btn top-new-invoice-vivid"
+              onClick={() => go("invoice")}
+              title="Create a new invoice"
+            >
+              <Icon name="plus" size={17} />
+              <span>New Invoice</span>
+            </button>
+            <div className="date-pill">
+              <Icon name="calendar" size={16} />
+              <span>{new Date().toLocaleDateString("en-PK", { weekday: "long", day: "numeric", month: "long" })}</span>
+            </div>
           </div>
         </header>
-        {content()}
+
+        <div className="main-content-area">
+          {content()}
+        </div>
+
         <footer className="app-footer">
           <span>© {new Date().getFullYear()} M.A Paint House · Khuzdar</span>
           <span className="app-footer-sep">·</span>
           <span className="app-footer-credit">Designed &amp; Developed by <b>Engr. Hamza Asad</b></span>
         </footer>
       </main>
+
+      {/* Mobile Bottom Navigation Bar (Smartphones & Tablets < 768px) */}
+      <nav className="mobile-bottom-nav" aria-label="Quick mobile navigation">
+        <button
+          type="button"
+          className={`mobile-nav-item ${page === "dashboard" ? "active" : ""}`}
+          onClick={() => go("dashboard")}
+        >
+          <Icon name="grid" size={20} />
+          <span>Dashboard</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-nav-item ${page === "customers" ? "active" : ""}`}
+          onClick={() => go("customers")}
+        >
+          <Icon name="users" size={20} />
+          <span>Customers</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-nav-item mobile-nav-invoice ${page === "invoice" ? "active" : ""}`}
+          onClick={() => go("invoice")}
+          aria-label="New Invoice"
+        >
+          <div className="mobile-invoice-icon-wrap">
+            <Icon name="plus" size={22} />
+          </div>
+          <span>Invoice</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-nav-item ${page === "history" ? "active" : ""}`}
+          onClick={() => go("history")}
+        >
+          <Icon name="file" size={20} />
+          <span>History</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-nav-item ${mobileMenuOpen ? "active" : ""}`}
+          onClick={() => setMobileMenuOpen(true)}
+        >
+          <Icon name="menu" size={20} />
+          <span>More</span>
+        </button>
+      </nav>
     </div>
   );
 }

@@ -4,7 +4,7 @@ export type IconName =
   | "grid" | "plus" | "file" | "wallet" | "book" | "box" | "chart" | "settings"
   | "search" | "bell" | "arrow" | "more" | "check" | "clock" | "printer" | "share"
   | "trash" | "minus" | "calendar" | "download" | "filter" | "edit" | "chevron" | "users" | "receipt" | "expense"
-  | "lock" | "eye" | "eyeOff" | "shield" | "palette";
+  | "lock" | "eye" | "eyeOff" | "shield" | "palette" | "menu" | "close";
 
 const iconPaths: Record<IconName, React.ReactNode> = {
   grid: (<><rect x="3" y="3" width="7" height="7" rx="2" /><rect x="14" y="3" width="7" height="7" rx="2" /><rect x="3" y="14" width="7" height="7" rx="2" /><rect x="14" y="14" width="7" height="7" rx="2" /></>),
@@ -38,6 +38,8 @@ const iconPaths: Record<IconName, React.ReactNode> = {
   eyeOff: (<><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M1 1l22 22" /><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" /></>),
   shield: (<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="m9 12 2 2 4-4" /></>),
   palette: (<><path d="M12 2a10 10 0 0 0 0 20 2 2 0 0 0 2-2v-1a2 2 0 0 1 2-2h1a6 6 0 0 0 6-6 10 10 0 0 0-11-9Z" /><circle cx="7.5" cy="10.5" r="1" /><circle cx="12" cy="7.5" r="1" /><circle cx="16.5" cy="10.5" r="1" /><circle cx="7.5" cy="15.5" r="1" /></>),
+  menu: (<><path d="M4 6h16M4 12h16M4 18h16" /></>),
+  close: (<><path d="M18 6 6 18M6 6l12 12" /></>),
 };
 
 export function Icon({ name, size = 18, className = "" }: { name: IconName; size?: number; className?: string }) {

@@ -141,19 +141,21 @@ export default function ProductFamilies() {
                         </div>
                       </div>
                     )}
-                    <table className="large-table">
-                      <thead><tr><th>Colour code</th><th>Drum</th><th>Gallon</th><th>Quartar</th><th>Status</th></tr></thead>
-                      <tbody>
-                        {codes.map((code) => {
-                          const variants = famProds.filter((p) => p.colourCode === code);
-                          const drum = variants.find((p) => p.size === "Drum");
-                          const gal = variants.find((p) => p.size === "Gallon");
-                          const q = variants.find((p) => p.size === "Quartar");
-                          return (<tr key={code}><td><b>{code}</b></td><td>{drum ? formatMoneyShort(drum.price) : "—"}</td><td>{gal ? formatMoneyShort(gal.price) : "—"}</td><td>{q ? formatMoneyShort(q.price) : "—"}</td><td>{variants[0]?.active ? "Active" : "Inactive"}</td></tr>);
-                        })}
-                        {codes.length === 0 && <tr><td colSpan={5} style={{ textAlign: "center", padding: 12 }}>No colour codes</td></tr>}
-                      </tbody>
-                    </table>
+                    <div className="table-wrap">
+                      <table className="large-table">
+                        <thead><tr><th>Colour code</th><th>Drum</th><th>Gallon</th><th>Quartar</th><th>Status</th></tr></thead>
+                        <tbody>
+                          {codes.map((code) => {
+                            const variants = famProds.filter((p) => p.colourCode === code);
+                            const drum = variants.find((p) => p.size === "Drum");
+                            const gal = variants.find((p) => p.size === "Gallon");
+                            const q = variants.find((p) => p.size === "Quartar");
+                            return (<tr key={code}><td><b>{code}</b></td><td>{drum ? formatMoneyShort(drum.price) : "—"}</td><td>{gal ? formatMoneyShort(gal.price) : "—"}</td><td>{q ? formatMoneyShort(q.price) : "—"}</td><td>{variants[0]?.active ? "Active" : "Inactive"}</td></tr>);
+                          })}
+                          {codes.length === 0 && <tr><td colSpan={5} style={{ textAlign: "center", padding: 12 }}>No colour codes</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </div>
