@@ -394,57 +394,6 @@ function Shell() {
           <span className="app-footer-credit">Designed &amp; Developed by <b>Engr. Hamza Asad</b></span>
         </footer>
       </main>
-
-      {/* Mobile Bottom Navigation Bar (Smartphones & Tablets < 768px) */}
-      <nav className="mobile-bottom-nav" aria-label="Quick mobile navigation">
-        <button
-          type="button"
-          className={`mobile-nav-item ${page === "dashboard" ? "active" : ""}`}
-          onClick={() => go("dashboard")}
-        >
-          <Icon name="grid" size={20} />
-          <span>Dashboard</span>
-        </button>
-
-        <button
-          type="button"
-          className={`mobile-nav-item ${page === "customers" ? "active" : ""}`}
-          onClick={() => go("customers")}
-        >
-          <Icon name="users" size={20} />
-          <span>Customers</span>
-        </button>
-
-        <button
-          type="button"
-          className={`mobile-nav-item mobile-nav-invoice ${page === "invoice" ? "active" : ""}`}
-          onClick={() => go("invoice")}
-          aria-label="New Invoice"
-        >
-          <div className="mobile-invoice-icon-wrap">
-            <Icon name="plus" size={22} />
-          </div>
-          <span>Invoice</span>
-        </button>
-
-        <button
-          type="button"
-          className={`mobile-nav-item ${page === "history" ? "active" : ""}`}
-          onClick={() => go("history")}
-        >
-          <Icon name="file" size={20} />
-          <span>History</span>
-        </button>
-
-        <button
-          type="button"
-          className={`mobile-nav-item ${mobileMenuOpen ? "active" : ""}`}
-          onClick={() => setMobileMenuOpen(true)}
-        >
-          <Icon name="menu" size={20} />
-          <span>More</span>
-        </button>
-      </nav>
     </div>
   );
 }

@@ -2936,7 +2936,17 @@ footer span {
     grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)) !important;
   }
   .line-items {
-    max-height: 380px;
+    max-height: none !important;
+    overflow: visible !important;
+    overflow-y: visible !important;
+    flex: none !important;
+    padding-right: 0 !important;
+    height: auto !important;
+  }
+  .invoice-bottom-pane {
+    position: static !important;
+    margin-top: 14px !important;
+    padding-bottom: 20px !important;
   }
   .metrics-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -2961,10 +2971,10 @@ footer span {
     display: block;
   }
   .mobile-bottom-nav {
-    display: grid;
+    display: none !important;
   }
   .main {
-    padding-bottom: 74px;
+    padding-bottom: 24px;
   }
   .topbar {
     height: 60px;
@@ -3056,7 +3066,17 @@ footer span {
     gap: 8px;
   }
   .line-items {
-    max-height: 320px;
+    max-height: none !important;
+    overflow: visible !important;
+    overflow-y: visible !important;
+    flex: none !important;
+    padding-right: 0 !important;
+    height: auto !important;
+  }
+  .invoice-bottom-pane {
+    position: static !important;
+    margin-top: 14px !important;
+    padding-bottom: 24px !important;
   }
   .invoice-buttons {
     grid-template-columns: 1fr;
@@ -3068,7 +3088,7 @@ footer span {
   }
   .invoice-floating-cart {
     display: flex;
-    bottom: 68px;
+    bottom: 20px;
   }
 
   /* Dashboard on phone */
