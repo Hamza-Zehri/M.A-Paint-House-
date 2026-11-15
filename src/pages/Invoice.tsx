@@ -306,9 +306,9 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
           <div className="line-items">
             {lines.length === 0 ? (
               <div className="empty">
-                <Icon name="box" size={32} />
+                <Icon name="box" size={22} />
                 <b>No items added yet</b>
-                <span>Tap any product from catalogue to add to this invoice</span>
+                <span>Click any product from catalogue to add</span>
                 <button
                   type="button"
                   className="btn btn-secondary invoice-mobile-browse-btn"
@@ -427,22 +427,22 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
               <label htmlFor="invoice-notes-input">Notes &amp; comments</label>
               <textarea
                 id="invoice-notes-input"
-                className="field"
+                className="field invoice-notes-textarea"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="Optional invoice notes, delivery remarks..."
-                rows={2}
+                rows={1}
               />
             </div>
 
             <div className="invoice-buttons">
               <button
                 type="button"
-                className="btn btn-primary save-wide"
+                className="btn btn-primary"
                 disabled={saving}
                 onClick={() => handleSave(false)}
               >
-                <Icon name="check" size={16} />
+                <Icon name="check" size={15} />
                 <span>{saving ? "Saving..." : editing ? "Update Invoice" : "Save Invoice"}</span>
               </button>
               <button
@@ -451,7 +451,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
                 disabled={saving}
                 onClick={() => handleSave(true)}
               >
-                <Icon name="share" size={16} />
+                <Icon name="share" size={15} />
                 <span>{editing ? "Update & WhatsApp" : "Save & WhatsApp"}</span>
               </button>
               <button
@@ -460,7 +460,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
                 disabled={!lastInvoice && !editing}
                 onClick={() => { const inv = lastInvoice || editing; if (inv) printInvoiceHtml(inv, settings); }}
               >
-                <Icon name="printer" size={16} />
+                <Icon name="printer" size={15} />
                 <span>Print</span>
               </button>
               <button
@@ -474,7 +474,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
                   setDate(todayLocalISO());
                 }}
               >
-                {editing ? "Cancel Edit" : "Clear All Items"}
+                {editing ? "Cancel Edit" : "Clear All"}
               </button>
             </div>
 
