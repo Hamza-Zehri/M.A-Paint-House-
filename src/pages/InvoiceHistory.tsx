@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort } from "../lib/money";
@@ -14,7 +14,8 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
   const [statusFilter, setStatusFilter] = useState("all");
   const [viewing, setViewing] = useState<any>(null);
   const [previewBusy, setPreviewBusy] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(1);
+  const [frameHeight, setFrameHeight] = useState<number | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const { isBusy, lock } = useActionLock();
   const shown = invoices.filter((i) => {
     if (statusFilter !== "all" && i.status !== statusFilter) return false;
@@ -108,7 +109,7 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
                     <td className="teal-text">{i.discountPercent}%</td><td><b>{formatMoneyShort(i.netPayable)}</b></td>
                     <td className={invoiceBalance(i.id) > 0 ? "red-text" : ""}>{formatMoneyShort(invoiceBalance(i.id))}</td><td>{i.status}{i.bonus && <span title="Bonus invoice" style={{ marginLeft: 6, color: "#f59e0b" }}>★</span>}</td>
                     <td><div className="row-actions">
-                      <button onClick={() => { setViewing(i); setZoom(1); }} title="View invoice"><Icon name="eye" size={16} /></button>
+                      <button onClick={() => { setViewing(i); setFrameHeight(null); }} title="View invoice"><Icon name="eye" size={16} /></button>
                       <button onClick={() => printInvoiceHtml(i, settings, customer, paid)} title="Print invoice"><Icon name="printer" size={16} /></button>
                       <button onClick={() => shareInvoice(i)} title="Share on WhatsApp"><Icon name="share" size={16} /></button>
                       <button onClick={() => onEdit?.(i)} title="Edit invoice"><Icon name="edit" size={16} /></button>
@@ -144,10 +145,8 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
                   {viewing.bonus && <span className="bonus-badge">Bonus</span>}
                 </div>
               </div>
-              <div className="invoice-preview-zoom">
-                <button type="button" onClick={() => setZoom((z) => Math.max(0.7, +(z - 0.1).toFixed(1)))} aria-label="Zoom out">−</button>
-                <span>{Math.round(zoom * 100)}%</span>
-                <button type="button" onClick={() => setZoom((z) => Math.min(1.6, +(z + 0.1).toFixed(1)))} aria-label="Zoom in">+</button>
+              <div className="invoice-preview-meta" style={{ marginLeft: "auto" }}>
+                <span>Scroll to view full invoice</span>
               </div>
             </header>
             <div className="invoice-preview-actions">
@@ -172,9 +171,20 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
               <button type="button" className="close-btn" onClick={() => setViewing(null)} disabled={!!previewBusy}>Close</button>
             </div>
             <div className="invoice-preview-body">
-              <div className="invoice-preview-frame-wrap" style={{ transform: `scale(${zoom})` }}>
-                <iframe title={`Invoice ${viewing.number}`} srcDoc={html} className="invoice-preview-frame" />
-              </div>
+              <iframe
+                ref={iframeRef}
+                title={`Invoice ${viewing.number}`}
+                srcDoc={html}
+                className="invoice-preview-frame"
+                onLoad={() => {
+                  const doc = iframeRef.current?.contentDocument;
+                  if (doc) {
+                    const height = Math.max(doc.body?.scrollHeight || 0, doc.documentElement?.scrollHeight || 0);
+                    setFrameHeight(height + 24);
+                  }
+                }}
+                style={{ height: frameHeight ? `${frameHeight}px` : undefined }}
+              />
             </div>
           </div>
         </div>
