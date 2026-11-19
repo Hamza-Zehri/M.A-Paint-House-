@@ -4964,3 +4964,21 @@ footer span {
   .invoice-preview-body { padding: 10px; }
   .invoice-preview-frame { width: 100%; min-height: 60vh; }
 }
+/* Make invoice tabs available on desktop so the catalogue can be toggled
+   without keeping the current invoice panel scrollable. */
+.invoice-mobile-tabs {
+  display: flex;
+}
+@media (min-width: 901px) {
+  .invoice-layout.show-catalogue-only .invoice-panel {
+    display: none !important;
+  }
+  .invoice-layout.show-invoice-only .catalogue {
+    display: none !important;
+  }
+  .invoice-layout.show-catalogue-only .catalogue,
+  .invoice-layout.show-invoice-only .invoice-panel {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+}
