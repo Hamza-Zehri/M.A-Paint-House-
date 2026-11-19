@@ -98,6 +98,7 @@ export interface Invoice {
   balanceDue: Money;
   previousBalance: Money;
   notes: string;
+  bonus?: boolean;
   status: InvoiceStatus;
   createdAt: string;
   updatedAt: string;
@@ -136,6 +137,7 @@ export interface LedgerEntry {
   debit: Money;
   credit: Money;
   balance: Money;
+  bonus?: boolean;
   createdAt: string;
 }
 

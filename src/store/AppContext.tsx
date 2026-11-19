@@ -45,9 +45,9 @@ interface Ctx {
     totalRows: number;
   }>;
   // invoices
-  createInvoice: (input: { customerId: string; date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; paymentReceived?: number; notes?: string; status?: "draft" | "finalized" }) => Promise<Invoice>;
+  createInvoice: (input: { customerId: string; date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; paymentReceived?: number; notes?: string; status?: "draft" | "finalized"; bonus?: boolean }) => Promise<Invoice>;
   updateInvoice: (inv: Invoice) => Promise<void>;
-  editInvoice: (id: string, input: { date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; notes?: string }) => Promise<Invoice>;
+  editInvoice: (id: string, input: { date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; notes?: string; bonus?: boolean }) => Promise<Invoice>;
   cancelInvoice: (id: string) => Promise<void>;
   deleteInvoice: (id: string) => Promise<void>;
   // payments
@@ -472,7 +472,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return inv.netPayable - paid;
   }, [invoices, allocations]);
 
-  const createInvoice = useCallback(async (input: { customerId: string; date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; paymentReceived?: number; notes?: string; status?: "draft" | "finalized" }) => {
+  const createInvoice = useCallback(async (input: { customerId: string; date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; paymentReceived?: number; notes?: string; status?: "draft" | "finalized"; bonus?: boolean }) => {
     const cust = await db.customers.get(input.customerId);
     if (!cust) throw new Error("Customer not found");
     const st = await db.settings.get("main");
@@ -501,12 +501,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const currentBal = custEntries.length ? custEntries[custEntries.length - 1].balance : (cust.openingBalance || 0);
 
     const status = input.status || "finalized";
-    const inv: Invoice = { id: uid(), number, customerId: cust.id, customerName: cust.name, customerDiscount: cust.discount, date: input.date, items: invItems, subtotal, discountPercent, discountAmount, netPayable, paymentReceived, balanceDue, previousBalance: currentBal, notes: input.notes || "", status, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const bonus = input.bonus || false;
+    const inv: Invoice = { id: uid(), number, customerId: cust.id, customerName: cust.name, customerDiscount: cust.discount, date: input.date, items: invItems, subtotal, discountPercent, discountAmount, netPayable, paymentReceived, balanceDue, previousBalance: currentBal, notes: input.notes || "", bonus, status, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     await db.invoices.put(inv);
 
     if (status === "finalized") {
       const newBal = currentBal + netPayable;
-      await db.ledger.put({ id: uid(), customerId: cust.id, date: input.date, type: "invoice", reference: number, description: `Invoice ${number}`, debit: netPayable, credit: 0, balance: newBal, createdAt: new Date().toISOString() });
+      await db.ledger.put({ id: uid(), customerId: cust.id, date: input.date, type: "invoice", reference: number, description: bonus ? `Bonus invoice ${number}` : `Invoice ${number}`, debit: netPayable, credit: 0, balance: newBal, bonus, createdAt: new Date().toISOString() });
       if (paymentReceived > 0) {
         const pay: Payment = { id: uid(), receiptNumber: `RCPT-${counter}`, customerId: cust.id, customerName: cust.name, date: input.date, amount: paymentReceived, method: "Cash", reference: number, notes: "Initial payment on invoice", createdAt: new Date().toISOString() };
         await db.payments.put(pay);
@@ -525,7 +526,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const updateInvoice = useCallback(async (inv: Invoice) => { inv.updatedAt = new Date().toISOString(); await db.invoices.put(inv); await log("update", "invoice", inv.id, `Updated invoice ${inv.number}`); await refresh(); }, [log, refresh]);
 
-  const editInvoice = useCallback(async (id: string, input: { date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; notes?: string }) => {
+  const editInvoice = useCallback(async (id: string, input: { date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; notes?: string; bonus?: boolean }) => {
     const inv = await db.invoices.get(id);
     if (!inv) throw new Error("Invoice not found");
     if (inv.status === "cancelled" || inv.status === "void") throw new Error("Cancelled invoices cannot be edited.");
@@ -556,6 +557,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     inv.paymentReceived = paid;
     inv.balanceDue = netPayable - paid;
     inv.notes = input.notes ?? inv.notes;
+    if (input.bonus !== undefined) inv.bonus = input.bonus;
     inv.updatedAt = new Date().toISOString();
     await db.invoices.put(inv);
 

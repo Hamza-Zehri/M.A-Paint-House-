@@ -10,28 +10,38 @@ export default function Reports() {
   const { invoices, payments, settings, customers, customerBalance } = useApp();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [monthFilter, setMonthFilter] = useState("all");
 
   const daily = useMemo(() => {
     const map: Record<string, { date: string; count: number; gross: number; discount: number; net: number; payments: number }> = {};
     for (const inv of invoices.filter((i) => i.status === "finalized")) {
-      if (from && inv.date < from) continue;
-      if (to && inv.date > to) continue;
+      if (monthFilter !== "all") {
+        if (!(inv.date || "").startsWith(monthFilter)) continue;
+      } else {
+        if (from && inv.date < from) continue;
+        if (to && inv.date > to) continue;
+      }
       if (!map[inv.date]) map[inv.date] = { date: inv.date, count: 0, gross: 0, discount: 0, net: 0, payments: 0 };
       const d = map[inv.date];
       d.count += 1; d.gross += inv.subtotal; d.discount += inv.discountAmount; d.net += inv.netPayable;
     }
     for (const p of payments) {
-      if (from && p.date < from) continue;
-      if (to && p.date > to) continue;
+      if (monthFilter !== "all") {
+        if (!(p.date || "").startsWith(monthFilter)) continue;
+      } else {
+        if (from && p.date < from) continue;
+        if (to && p.date > to) continue;
+      }
       if (!map[p.date]) map[p.date] = { date: p.date, count: 0, gross: 0, discount: 0, net: 0, payments: 0 };
       map[p.date].payments += p.amount;
     }
     return Object.values(map).sort((a, b) => b.date.localeCompare(a.date));
-  }, [invoices, payments, from, to]);
+  }, [invoices, payments, from, to, monthFilter]);
 
   const totals = daily.reduce((acc, d) => ({ count: acc.count + d.count, gross: acc.gross + d.gross, discount: acc.discount + d.discount, net: acc.net + d.net, payments: acc.payments + d.payments }), { count: 0, gross: 0, discount: 0, net: 0, payments: 0 });
 
   const outstandingRows = customers.map((c) => ({ name: c.name, balance: customerBalance(c.id) })).filter((r) => r.balance !== 0);
+  const monthOptions = Array.from(new Set([...invoices.map((i) => i.date || ""), ...payments.map((p) => p.date || "")].map((d) => d.slice(0, 7)))).filter(Boolean).sort().reverse();
 
   const shareDailyReport = async () => {
     const rows = daily.map((d) => [
@@ -56,7 +66,7 @@ export default function Reports() {
         filename: reportPdfName("Daily Sales Report"),
         phone: settings?.whatsapp || settings?.phone,
         title: "Daily Sales Report",
-        message: `Daily Sales Report — M.A Paint House\nPeriod: ${from || "start"} to ${to || "today"}\nNet sales: ${formatMoneyShort(totals.net)}\nPayments: ${formatMoneyShort(totals.payments)}`,
+        message: `Daily Sales Report — M.A Paint House\nPeriod: ${monthFilter !== "all" ? monthFilter : `${from || "start"} to ${to || "today"}`}\nNet sales: ${formatMoneyShort(totals.net)}\nPayments: ${formatMoneyShort(totals.payments)}`,
       });
       toast(result === "shared" ? "Sales report PDF shared." : "Sales report PDF downloaded — attach it in the WhatsApp chat.", "success");
     } catch (error: any) {
@@ -91,10 +101,18 @@ export default function Reports() {
     <div className="page">
       <div className="card data-card">
         <div className="page-toolbar">
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="date" className="field" value={from} onChange={(e) => setFrom(e.target.value)} style={{ width: 150 }} />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="filter-button">
+              <option value="all">All months</option>
+              {monthOptions.map((m) => (
+                <option key={m} value={m}>
+                  {new Date(`${m}-01`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}
+                </option>
+              ))}
+            </select>
+            <input type="date" className="field" value={from} onChange={(e) => setFrom(e.target.value)} style={{ width: 150 }} disabled={monthFilter !== "all"} />
             <span>to</span>
-            <input type="date" className="field" value={to} onChange={(e) => setTo(e.target.value)} style={{ width: 150 }} />
+            <input type="date" className="field" value={to} onChange={(e) => setTo(e.target.value)} style={{ width: 150 }} disabled={monthFilter !== "all"} />
           </div>
           <button className="btn btn-primary" onClick={shareDailyReport}><Icon name="share" size={16} /> Share PDF report</button>
         </div>

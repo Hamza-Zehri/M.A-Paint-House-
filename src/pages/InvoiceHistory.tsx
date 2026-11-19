@@ -3,7 +3,7 @@ import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort } from "../lib/money";
 import { invoicePdfBlob, invoicePdfName } from "../lib/pdfFile";
-import { printInvoiceHtml } from "../lib/pdf";
+import { printInvoiceHtml, getInvoiceHtml } from "../lib/pdf";
 import { sharePdf } from "../lib/share";
 import { appConfirm, toast } from "../lib/dialog";
 
@@ -11,6 +11,7 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
   const { invoices, settings, customers, allocations, cancelInvoice, deleteInvoice, invoiceBalance } = useApp();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [viewing, setViewing] = useState<any>(null);
   const shown = invoices.filter((i) => {
     if (statusFilter !== "all" && i.status !== statusFilter) return false;
     return i.number.toLowerCase().includes(query.toLowerCase()) || i.customerName.toLowerCase().includes(query.toLowerCase());
@@ -74,6 +75,7 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
   };
 
   return (
+    <> 
     <div className="page">
       <div className="card data-card">
         <div className="page-toolbar">
@@ -102,6 +104,7 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
                     <td className="teal-text">{i.discountPercent}%</td><td><b>{formatMoneyShort(i.netPayable)}</b></td>
                     <td className={invoiceBalance(i.id) > 0 ? "red-text" : ""}>{formatMoneyShort(invoiceBalance(i.id))}</td><td>{i.status}</td>
                     <td><div className="row-actions">
+                      <button onClick={() => setViewing(i)} title="View invoice"><Icon name="eye" size={16} /></button>
                       <button onClick={() => printInvoiceHtml(i, settings, customer, paid)} title="Print invoice"><Icon name="printer" size={16} /></button>
                       <button onClick={() => shareInvoice(i)} title="Share on WhatsApp"><Icon name="share" size={16} /></button>
                       <button onClick={() => onEdit?.(i)} title="Edit invoice"><Icon name="edit" size={16} /></button>
@@ -117,5 +120,41 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
         </div>
       </div>
     </div>
+    {viewing && (() => {
+      const vCustomer = customers.find((c) => c.id === viewing.customerId);
+      const vAllocated = allocations
+        .filter((a) => a.invoiceId === viewing.id)
+        .reduce((s, a) => s + a.amount, 0);
+      const vPaid = Math.max(vAllocated, viewing.paymentReceived || 0);
+      const html = getInvoiceHtml(viewing, settings, false, vCustomer, vPaid);
+      return (
+        <div
+          onClick={() => setViewing(null)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(11,31,58,0.55)",
+            backdropFilter: "blur(4px)", zIndex: 10000,
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(960px, 96vw)", height: "88vh", background: "#fff",
+              borderRadius: 16, overflow: "hidden", boxShadow: "0 24px 70px rgba(11,31,58,0.35)",
+              display: "flex", flexDirection: "column",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1px solid #e3e9f1", background: "#f6f8fb" }}>
+              <b style={{ color: "#0b1f3a" }}>Invoice {viewing.number}</b>
+              <button onClick={() => setViewing(null)} style={{ border: "none", background: "transparent", cursor: "pointer", padding: 4 }} aria-label="Close">
+                <Icon name="close" size={20} />
+              </button>
+            </div>
+            <iframe title={`Invoice ${viewing.number}`} srcDoc={html} style={{ flex: 1, border: "none", width: "100%" }} />
+          </div>
+        </div>
+      );
+    })()}
+    </>
   );
 }

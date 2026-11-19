@@ -20,6 +20,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
     initial ? initial.items.map((it) => ({ productId: it.productId, qty: it.qty, unitPrice: it.unitPrice })) : []
   );
   const [discountPercent, setDiscountPercent] = useState<number | null>(initial ? initial.discountPercent : null);
+  const [bonus, setBonus] = useState<boolean>(initial?.bonus || false);
   const [paymentReceived, setPaymentReceived] = useState("");
   const [notes, setNotes] = useState(initial?.notes || "");
   const [saving, setSaving] = useState(false);
@@ -33,6 +34,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
       setDate(initial.date);
       setLines(initial.items.map((it) => ({ productId: it.productId, qty: it.qty, unitPrice: it.unitPrice })));
       setDiscountPercent(initial.discountPercent);
+      setBonus(initial.bonus || false);
       setNotes(initial.notes || "");
       setActiveTab("invoice");
     } else {
@@ -41,7 +43,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
   }, [initial]);
 
   const customer = customers.find((c) => c.id === customerId);
-  const effectiveDiscount = discountPercent !== null ? discountPercent : (customer?.discount ?? 0);
+  const effectiveDiscount = bonus ? 100 : (discountPercent !== null ? discountPercent : (customer?.discount ?? 0));
 
   const filtered = products.filter((p) => p.active && (!selectedFamily || p.familyId === selectedFamily) && (p.name.toLowerCase().includes(query.toLowerCase()) || p.category.toLowerCase().includes(query.toLowerCase()) || p.code.toLowerCase().includes(query.toLowerCase())));
 
@@ -102,13 +104,13 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
     try {
       const items = lines.map((l) => ({ productId: l.productId, qty: l.qty, unitPrice: l.unitPrice / 100 }));
       if (editing) {
-        const inv = await editInvoice(editing.id, { date, items, discountPercent: effectiveDiscount, notes });
+        const inv = await editInvoice(editing.id, { date, items, discountPercent: effectiveDiscount, notes, bonus });
         setLastInvoice(inv);
         toast(`Invoice ${inv.number} updated.`, "success");
         if (andShare) await shareInvoicePdf(inv, customer);
         onDone?.();
       } else {
-        const inv = await createInvoice({ customerId, date, items, discountPercent: effectiveDiscount, paymentReceived: parseFloat(paymentReceived) || 0, notes, status: "finalized" });
+        const inv = await createInvoice({ customerId, date, items, discountPercent: effectiveDiscount, paymentReceived: parseFloat(paymentReceived) || 0, notes, status: "finalized", bonus });
         setLastInvoice(inv); setLines([]); setPaymentReceived(""); setNotes(""); setDate(todayLocalISO());
         toast(`Invoice ${inv.number} saved.`, "success");
         if (andShare) await shareInvoicePdf(inv, customer);
@@ -284,17 +286,27 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
               )}
             </div>
 
-            <div className="discount-override-row">
-              <label>
+            <div className="discount-override-row" style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
+              <label style={{ flex: 1 }}>
                 Discount % override
                 <input
                   type="number"
                   min="0"
                   max="100"
                   value={effectiveDiscount}
+                  disabled={bonus}
                   onChange={(e) => setDiscountPercent(parseFloat(e.target.value) || 0)}
                 />
               </label>
+              <button
+                type="button"
+                className={bonus ? "btn btn-primary" : "btn btn-secondary"}
+                onClick={() => setBonus((v) => !v)}
+                style={{ height: 36 }}
+                title="Mark this invoice as bonus (products free for customer)"
+              >
+                {bonus ? "Bonus: ON" : "Bonus"}
+              </button>
             </div>
 
             <div className="line-heading">

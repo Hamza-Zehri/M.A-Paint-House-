@@ -9,8 +9,11 @@ import { toast } from "../lib/dialog";
 export default function Ledger() {
   const { customers, ledger, customerBalance, settings } = useApp();
   const [customerId, setCustomerId] = useState(customers[0]?.id || "");
+  const [monthFilter, setMonthFilter] = useState("all");
   const customer = customers.find((c) => c.id === customerId);
-  const entries = ledger.filter((l) => l.customerId === customerId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const baseEntries = ledger.filter((l) => l.customerId === customerId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const monthOptions = Array.from(new Set(baseEntries.map((l) => (l.date || "").slice(0, 7)))).filter(Boolean).sort().reverse();
+  const entries = monthFilter === "all" ? baseEntries : baseEntries.filter((l) => (l.date || "").startsWith(monthFilter));
   const bal = customer ? customerBalance(customer.id) : 0;
 
   const shareStatement = async () => {
@@ -38,6 +41,14 @@ export default function Ledger() {
       <div className="card" style={{ padding: 16, marginBottom: 12 }}>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <label>Customer<select className="field" value={customerId} onChange={(e) => setCustomerId(e.target.value)} style={{ marginLeft: 8 }}>{customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+          <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="filter-button">
+            <option value="all">All months</option>
+            {monthOptions.map((m) => (
+              <option key={m} value={m}>
+                {new Date(`${m}-01`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}
+              </option>
+            ))}
+          </select>
           <button className="btn btn-primary" onClick={shareStatement}><Icon name="share" size={16} /> Share PDF statement</button>
         </div>
       </div>
@@ -58,7 +69,7 @@ export default function Ledger() {
                 <tr key={e.id}>
                   <td>{e.date}</td>
                   <td><span className={`status ${e.type === "payment" ? "paid" : "partial"}`}>{e.type}</span></td>
-                  <td><b>{e.reference}</b></td>
+                  <td><b>{e.reference}</b>{e.bonus && <span title="Bonus invoice" style={{ marginLeft: 6, color: "#f59e0b" }}>★</span>}</td>
                   <td>{e.description}</td>
                   <td>{e.debit ? formatMoney(e.debit) : "—"}</td>
                   <td className="teal-text">{e.credit ? formatMoney(e.credit) : "—"}</td>

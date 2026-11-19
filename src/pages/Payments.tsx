@@ -20,6 +20,7 @@ export default function Payments() {
   const [receiptNumber] = useState(`RCPT-${Date.now().toString().slice(-6)}`);
   const [editing, setEditing] = useState<Payment | null>(null);
   const [editForm, setEditForm] = useState({ date: "", method: "Cash", reference: "", notes: "" });
+  const [monthFilter, setMonthFilter] = useState("all");
 
   const startEdit = (p: Payment) => {
     setEditing(p);
@@ -72,6 +73,8 @@ export default function Payments() {
   const bal = customer ? customerBalance(customer.id) : 0;
   const payPaisa = toPaisa(parseFloat(amount) || 0);
   const after = bal - payPaisa;
+  const monthOptions = Array.from(new Set(payments.map((p) => (p.date || "").slice(0, 7)))).filter(Boolean).sort().reverse();
+  const shownPayments = monthFilter === "all" ? payments : payments.filter((p) => (p.date || "").startsWith(monthFilter));
 
   const handleSave = async () => {
     if (!customerId) { toast("Select a customer.", "error"); return; }
@@ -106,7 +109,17 @@ export default function Payments() {
         <button className="btn btn-primary full" onClick={handleSave}><Icon name="check" /> Save payment & issue receipt</button>
       </section>
       <section className="card payments-list">
-        <div className="section-head"><div><h3>Payment history</h3><p>All customer receipts</p></div></div>
+        <div className="section-head" style={{ flexWrap: "wrap", gap: 8 }}>
+          <div><h3>Payment history</h3><p>All customer receipts</p></div>
+          <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="filter-button">
+            <option value="all">All months</option>
+            {monthOptions.map((m) => (
+              <option key={m} value={m}>
+                {new Date(`${m}-01`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}
+              </option>
+            ))}
+          </select>
+        </div>
         {editing && (
           <div className="card" style={{ margin: 12, padding: 16 }}>
             <h4 style={{ marginTop: 0 }}>Edit {editing.receiptNumber}</h4>
@@ -123,8 +136,8 @@ export default function Payments() {
             </div>
           </div>
         )}
-        <div className="payment-total"><div><small>Total received</small><b>{formatMoneyShort(payments.reduce((s, p) => s + p.amount, 0))}</b></div></div>
-        {[...payments].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((x) => (
+        <div className="payment-total"><div><small>Total received</small><b>{formatMoneyShort(shownPayments.reduce((s, p) => s + p.amount, 0))}</b></div></div>
+        {[...shownPayments].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((x) => (
           <div className="payment-row" key={x.id}>
             <span className="receipt-icon"><Icon name="check" size={16} /></span>
             <div><b>{x.receiptNumber}</b><small>{x.customerName} • {x.date} • {x.method}</small></div>
@@ -134,7 +147,7 @@ export default function Payments() {
             <button className="table-action" onClick={() => removePayment(x)} title="Delete payment"><Icon name="trash" size={16} /></button>
           </div>
         ))}
-        {payments.length === 0 && <p style={{ padding: 12, color: "var(--muted)" }}>No payments yet</p>}
+        {shownPayments.length === 0 && <p style={{ padding: 12, color: "var(--muted)" }}>No payments yet</p>}
       </section>
     </div>
   );
