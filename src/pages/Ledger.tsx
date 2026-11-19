@@ -15,6 +15,7 @@ export default function Ledger() {
   const monthOptions = Array.from(new Set(baseEntries.map((l) => (l.date || "").slice(0, 7)))).filter(Boolean).sort().reverse();
   const entries = monthFilter === "all" ? baseEntries : baseEntries.filter((l) => (l.date || "").startsWith(monthFilter));
   const bal = customer ? customerBalance(customer.id) : 0;
+  const closingBal = monthFilter !== "all" && entries.length ? entries[entries.length - 1].balance : bal;
 
   const shareStatement = async () => {
     if (!customer) return;
@@ -57,7 +58,7 @@ export default function Ledger() {
           <div><span>Opening balance</span><b>{formatMoneyShort(customer.openingBalance)}</b></div>
           <div><span>Total debits</span><b>{formatMoneyShort(entries.reduce((s, e) => s + e.debit, 0))}</b></div>
           <div><span>Total credits</span><b className="teal-text">{formatMoneyShort(entries.reduce((s, e) => s + e.credit, 0))}</b></div>
-          <div className="outstanding"><span>Closing balance</span><b>{formatMoneyShort(bal)}</b></div>
+          <div className="outstanding"><span>Closing balance</span><b>{formatMoneyShort(closingBal)}</b></div>
         </section>
       )}
       <div className="card data-card">
