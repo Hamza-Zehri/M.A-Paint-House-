@@ -64,6 +64,19 @@ test("network error classification covers offline and Firestore retryable codes"
   assert.equal(shouldRetryNetworkError({ code: "permission-denied", message: "Permission denied" }), false);
 });
 
+test("quota exhaustion is never retried and gets an actionable message", async () => {
+  assert.equal(shouldRetryNetworkError({ code: "resource-exhausted" }), false);
+  assert.match(friendlyError({ code: "resource-exhausted" }), /quota is exhausted/i);
+  let attempts = 0;
+  await assert.rejects(
+    retry(async () => {
+      attempts += 1;
+      throw { code: "resource-exhausted" };
+    }, { retries: 3, baseDelay: 1 }),
+  );
+  assert.equal(attempts, 1);
+});
+
 test("measured records real durations and failures without estimates", async () => {
   clearPerf();
   await measured("test.operation", "data", async () => {

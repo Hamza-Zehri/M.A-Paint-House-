@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { runTransaction, type Transaction } from "firebase/firestore";
 import { db, docRef, balanceRef, commitWrites, type WriteOp } from "../lib/db";
 import { firestore } from "../lib/firebase";
@@ -6,7 +6,15 @@ import { seedIfEmpty, cleanupLegacySeededData } from "../lib/seed";
 import { toPaisa, uid, percentOf } from "../lib/money";
 import { currentUser, logout as doLogout, waitForAuth, isDefaultAdminEmail } from "../lib/auth";
 import { measured } from "../lib/perf";
-import { withTimeout, retry } from "../lib/asyncUtils";
+import {
+  withTimeout,
+  retry,
+  friendlyError,
+  isQuotaExhausted,
+  isQuotaCoolingDown,
+  noteQuotaExhausted,
+} from "../lib/asyncUtils";
+import { readSnapshot, writeSnapshot, type SnapshotData } from "../lib/snapshotCache";
 import {
   idempotentId,
   indexById,
@@ -102,13 +110,36 @@ function makeAudit(user: User | null, action: string, entity: string, entityId: 
 
 /** Timeout protects the UI from hung requests; never assume a timeout = failure. */
 const MUTATION_TIMEOUT = 15000;
+
+/** A quota failure is global — stop sending requests until the cooldown expires. */
+function assertQuotaAvailable() {
+  if (isQuotaCoolingDown()) {
+    throw new Error("Firestore quota cooldown is active. The saved data is shown from cache; please retry shortly.");
+  }
+}
+
+function observeQuota(error: unknown) {
+  if (isQuotaExhausted(error)) noteQuotaExhausted();
+}
+
 function guard<T>(name: string, work: () => Promise<T>): Promise<T> {
-  return measured(name, "data", () => withTimeout(work(), MUTATION_TIMEOUT, name));
+  assertQuotaAvailable();
+  return measured(name, "data", () =>
+    withTimeout(work(), MUTATION_TIMEOUT, name).catch((error) => {
+      observeQuota(error);
+      throw error;
+    }),
+  );
 }
 /** Only used where an idempotency key makes a retry safe. */
 function guardIdempotent<T>(name: string, work: () => Promise<T>): Promise<T> {
+  assertQuotaAvailable();
   return measured(name, "data", () =>
-    retry(() => withTimeout(work(), MUTATION_TIMEOUT, name), { retries: 1, baseDelay: 500, label: name }),
+    retry(() => withTimeout(work(), MUTATION_TIMEOUT, name), { retries: 1, baseDelay: 500, label: name })
+      .catch((error) => {
+        observeQuota(error);
+        throw error;
+      }),
   );
 }
 
@@ -181,36 +212,88 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const paymentsByCustomer = useMemo(() => indexBy(payments, (p) => p.customerId), [payments]);
   const productsByFamilyMap = useMemo(() => indexBy(products, (p) => p.familyId), [products]);
 
-  const refresh = useCallback(async () => {
-    return measured("data.refresh", "data", async () => {
-      const [s, cust, fam, pr, prod, inv, pay, alloc, ledg, exp, aud, u] = await Promise.all([
-        db.settings.get("main"),
-        db.customers.toArray(),
-        db.families.toArray(),
-        db.pricing.toArray(),
-        db.products.toArray(),
-        db.invoices.toArray(),
-        db.payments.toArray(),
-        db.allocations.toArray(),
-        db.ledger.toArray(),
-        db.expenses.toArray(),
-        db.audit.toArray(),
-        currentUser(),
-      ]);
-      setSettings(s || null);
-      setCustomers(cust);
-      setFamilies(fam);
-      setPricing(pr);
-      setProducts(prod);
-      setInvoices(inv);
-      setPayments(pay);
-      setAllocations(alloc);
-      setLedger(ledg);
-      setExpenses(exp);
-      setAudit(aud);
-      setUser(u);
-    });
+  const applySnapshot = useCallback((data: SnapshotData) => {
+    setSettings(data.settings);
+    setCustomers(data.customers);
+    setFamilies(data.families);
+    setPricing(data.pricing);
+    setProducts(data.products);
+    setInvoices(data.invoices);
+    setPayments(data.payments);
+    setAllocations(data.allocations);
+    setLedger(data.ledger);
+    setExpenses(data.expenses);
+    setAudit(data.audit);
   }, []);
+
+  const snapshotData = useMemo<SnapshotData>(() => ({
+    settings, customers, families, pricing, products, invoices,
+    payments, allocations, ledger, expenses, audit,
+  }), [settings, customers, families, pricing, products, invoices, payments, allocations, ledger, expenses, audit]);
+  const lastSnapshotWrite = useRef(0);
+
+  // Keep the cache current after every targeted mutation patch, so a quick
+  // reload does not need to re-read every collection from Firestore.
+  useEffect(() => {
+    if (!ready) return;
+    if (!customers.length && !products.length && !invoices.length) return;
+    const now = Date.now();
+    if (now - lastSnapshotWrite.current < 500) return;
+    lastSnapshotWrite.current = now;
+    writeSnapshot(snapshotData);
+  }, [ready, snapshotData, customers.length, products.length, invoices.length]);
+
+  const refresh = useCallback(async () => {
+    // Auth is local; keep the session valid even when Firestore is cooling down.
+    try { setUser(await currentUser()); } catch { setUser(null); }
+    const cached = readSnapshot();
+    if (cached) {
+      applySnapshot(cached);
+      // A recently written snapshot already includes local mutation patches.
+      if (Date.now() - cached.at < 30_000) return;
+    }
+    if (isQuotaCoolingDown()) return;
+
+    return measured("data.refresh", "data", async () => {
+      try {
+        const [s, cust, fam, pr, prod, inv, pay, alloc, ledg, exp, aud] = await Promise.all([
+          db.settings.get("main"),
+          db.customers.toArray(),
+          db.families.toArray(),
+          db.pricing.toArray(),
+          db.products.toArray(),
+          db.invoices.toArray(),
+          db.payments.toArray(),
+          db.allocations.toArray(),
+          db.ledger.toArray(),
+          db.expenses.toArray(),
+          db.audit.toArray(),
+        ]);
+        const data: SnapshotData = {
+          settings: s || null,
+          customers: cust,
+          families: fam,
+          pricing: pr,
+          products: prod,
+          invoices: inv,
+          payments: pay,
+          allocations: alloc,
+          ledger: ledg,
+          expenses: exp,
+          audit: aud,
+        };
+        applySnapshot(data);
+        writeSnapshot(data);
+      } catch (error) {
+        observeQuota(error);
+        if (cached) {
+          console.warn("Using cached workspace data:", friendlyError(error));
+          return;
+        }
+        throw error;
+      }
+    });
+  }, [applySnapshot]);
 
   useEffect(() => { (async () => {
     const fbUser = await waitForAuth();
@@ -234,6 +317,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }));
         }
         try { await fbUser.getIdToken(true); } catch (e) { console.error(e); }
+        // A cached workspace proves seeding already happened; skip the count
+        // queries entirely on repeat visits, especially during a quota event.
+        const cachedBeforeSeed = readSnapshot();
+        if (cachedBeforeSeed?.products?.length && !localStorage.getItem("maph_seeded")) {
+          localStorage.setItem("maph_seeded", "1");
+        }
         if (!localStorage.getItem("maph_seeded")) {
           try {
             await seedIfEmpty();

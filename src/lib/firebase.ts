@@ -1,7 +1,11 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
 import { getAuth } from "firebase/auth";
-import { initializeFirestore } from "firebase/firestore";
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCjxZp-I73eKfz0KMhoBVDSBtYbK4L90zQ",
@@ -18,7 +22,22 @@ export const analytics = getAnalytics(app);
 export const auth = getAuth(app);
 // Long polling is far more reliable than the default WebChannel streaming
 // transport in some networks/browsers, where the first request can hang.
-export const firestore = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-});
+// A persistent local cache lets the app survive a temporary Firestore quota
+// error without losing the last successfully loaded workspace.
+function createFirestore() {
+  const options = { experimentalForceLongPolling: true } as const;
+  if (typeof indexedDB !== "undefined") {
+    try {
+      return initializeFirestore(app, {
+        ...options,
+        localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+      });
+    } catch (error) {
+      console.warn("Persistent Firestore cache unavailable; using memory cache.", error);
+    }
+  }
+  return initializeFirestore(app, options);
+}
+
+export const firestore = createFirestore();
 export default app;

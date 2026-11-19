@@ -32,33 +32,37 @@ service cloud.firestore {
 
     match /settings/{docId} {
       allow read: if isTrustedUser();
-      allow write: if isTrustedUser()
+      allow create, update: if isTrustedUser()
         && hasKeys(['id', 'name', 'address', 'phone', 'invoicePrefix', 'invoiceCounter', 'paymentMethods'])
         && request.resource.data.invoiceCounter is int
         && request.resource.data.paymentMethods is list;
+      // request.resource is null on delete, so validation rules must not run there.
+      allow delete: if isTrustedUser();
     }
 
     match /customers/{id} {
       allow read: if isTrustedUser();
-      allow write: if isTrustedUser()
+      allow create, update: if isTrustedUser()
         && hasKeys(['id', 'name', 'phone', 'address', 'openingBalance', 'discount', 'active'])
         && isMoney(request.resource.data.openingBalance)
         && isMoney(request.resource.data.discount)
         && request.resource.data.active is bool;
+      allow delete: if isTrustedUser();
     }
 
     match /families/{id} {
-      allow read, write: if isTrustedUser();
+      allow read, create, update, delete: if isTrustedUser();
     }
 
     match /pricing/{id} {
       allow read: if isTrustedUser();
-      allow write: if isTrustedUser()
+      allow create, update: if isTrustedUser()
         && hasKeys(['familyId', 'drumPrice', 'gallonPrice', 'quartarPrice', 'updatedAt']);
+      allow delete: if isTrustedUser();
     }
 
     match /products/{id} {
-      allow read, write: if isTrustedUser();
+      allow read, create, update, delete: if isTrustedUser();
     }
 
     match /invoices/{id} {
@@ -94,31 +98,34 @@ service cloud.firestore {
 
     match /allocations/{id} {
       allow read: if isTrustedUser();
-      allow write: if isTrustedUser()
+      allow create, update: if isTrustedUser()
         && hasKeys(['id', 'paymentId', 'invoiceId', 'amount', 'createdAt'])
         && isMoney(request.resource.data.amount)
         && request.resource.data.amount >= 0;
+      allow delete: if isTrustedUser();
     }
 
     match /ledger/{id} {
       allow read: if isTrustedUser();
-      allow write: if isTrustedUser()
+      allow create, update: if isTrustedUser()
         && hasKeys(['id', 'customerId', 'date', 'type', 'debit', 'credit', 'balance', 'createdAt'])
         && isMoney(request.resource.data.debit)
         && isMoney(request.resource.data.credit)
         && isMoney(request.resource.data.balance);
+      allow delete: if isTrustedUser();
     }
 
     // Canonical balance row written atomically with invoices and payments.
     match /customerBalances/{id} {
       allow read: if isTrustedUser();
-      allow write: if isTrustedUser()
+      allow create, update: if isTrustedUser()
         && hasKeys(['amount', 'updatedAt'])
         && isMoney(request.resource.data.amount);
+      allow delete: if isTrustedUser();
     }
 
     match /expenses/{id} {
-      allow read, write: if isTrustedUser();
+      allow read, create, update, delete: if isTrustedUser();
     }
 
     // Audit history is append-only for normal users.

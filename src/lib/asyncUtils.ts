@@ -54,13 +54,41 @@ const RETRYABLE_CODES = [
   "unavailable",
   "deadline-exceeded",
   "internal",
-  "resource-exhausted",
   "network-request-failed",
 ];
 
-export function shouldRetryNetworkError(error: any): boolean {
+const QUOTA_KEY = "maph_firestore_quota_cooldown";
+const QUOTA_COOLDOWN_MS = 60_000;
+
+/** Quota exhaustion is not a transient network fault — retrying makes it worse. */
+export function isQuotaExhausted(error: any): boolean {
   const code = String(error?.code || "").toLowerCase();
+  return code === "resource-exhausted" || code === "429" || Number(error?.status) === 429;
+}
+
+export function shouldRetryNetworkError(error: any): boolean {
+  if (isQuotaExhausted(error)) return false;
+  const code = String(error?.code || "").toLowerCase();
+  if (code === "permission-denied" || code === "not-found" || code === "invalid-argument") return false;
   return RETRYABLE_CODES.includes(code) || /network|offline|temporar|timeout|failed to fetch/i.test(String(error?.message || ""));
+}
+
+/** Remember a quota failure so a page reload does not immediately retry it. */
+export function noteQuotaExhausted(): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(QUOTA_KEY, String(Date.now() + QUOTA_COOLDOWN_MS));
+    }
+  } catch { /* storage can be unavailable in private mode */ }
+}
+
+export function isQuotaCoolingDown(): boolean {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    return Number(localStorage.getItem(QUOTA_KEY) || 0) > Date.now();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -85,6 +113,9 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
 
 /** Human-readable message for toasts; keeps timeout/idempotency context. */
 export function friendlyError(error: any): string {
+  if (isQuotaExhausted(error)) {
+    return "Firestore's free daily quota is exhausted. Anything already saved is safe; the app is showing the last cached data. Please wait a minute or check Firebase usage before retrying.";
+  }
   if (error instanceof OperationTimeoutError) {
     return `${error.operation} is taking longer than expected. We will check whether it already completed — please do not repeat the action.`;
   }

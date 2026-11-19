@@ -1,5 +1,6 @@
-import { db, commitWrites, docRef } from "./db";
+import { db, commitWrites, docRef, type WriteOp } from "./db";
 import { toPaisa } from "./money";
+import { isQuotaCoolingDown, isQuotaExhausted, noteQuotaExhausted } from "./asyncUtils";
 import type { BusinessSettings } from "./types";
 
 const FAMILIES: { name: string; drum: number; gallon: number; quartar: number; codes: string[] }[] = [
@@ -13,27 +14,47 @@ const FAMILIES: { name: string; drum: number; gallon: number; quartar: number; c
   { name: "Eco Star Emulsion", drum: 16000, gallon: 4200, quartar: 1150, codes: ["801","802"] },
 ];
 
+const CLEANUP_KEY = "maph_legacy_cleanup_v2";
+
+/**
+ * One-time, batched cleanup. This used to run on every login and issue four
+ * reads plus a write per ledger row, which wasted quota and produced noisy
+ * permission errors on installations with older rules.
+ */
 export async function cleanupLegacySeededData() {
   try {
-    const bashir = await db.customers.get("cust-bashir-kalat");
-    if (bashir) {
-      await db.customers.delete("cust-bashir-kalat");
-    }
-    const legacyLedger = await db.ledger.get("ledger-open-bashir");
-    if (legacyLedger) {
-      await db.ledger.delete("ledger-open-bashir");
-    }
-    const entries = await db.ledger.where("customerId").equals("cust-bashir-kalat").toArray();
-    for (const entry of entries) {
-      await db.ledger.delete(entry.id);
-    }
-    await commitWrites([{ type: "delete", ref: docRef("customerBalances", "cust-bashir-kalat") }]);
+    if (typeof localStorage !== "undefined" && localStorage.getItem(CLEANUP_KEY)) return;
+    if (isQuotaCoolingDown()) return;
+    const [bashir, legacyLedger, entries] = await Promise.all([
+      db.customers.get("cust-bashir-kalat"),
+      db.ledger.get("ledger-open-bashir"),
+      db.ledger.where("customerId").equals("cust-bashir-kalat").toArray(),
+    ]);
+    const ops: WriteOp[] = [{ type: "delete", ref: docRef("customerBalances", "cust-bashir-kalat") }];
+    if (bashir) ops.push({ type: "delete", ref: docRef("customers", "cust-bashir-kalat") });
+    if (legacyLedger) ops.push({ type: "delete", ref: docRef("ledger", "ledger-open-bashir") });
+    for (const entry of entries) ops.push({ type: "delete", ref: docRef("ledger", entry.id) });
+    await commitWrites(ops);
+    if (typeof localStorage !== "undefined") localStorage.setItem(CLEANUP_KEY, "1");
   } catch (e) {
-    console.error("Cleanup legacy data error:", e);
+    // Never block startup on optional cleanup; leave the flag unset so it can
+    // be retried once rules/quota allow it.
+    if (isQuotaExhausted(e)) noteQuotaExhausted();
+    console.warn("Legacy cleanup skipped:", e);
   }
 }
 
 export async function seedIfEmpty() {
+  if (isQuotaCoolingDown()) return;
+  try {
+    await seedWhenEmpty();
+  } catch (e) {
+    if (isQuotaExhausted(e)) noteQuotaExhausted();
+    throw e;
+  }
+}
+
+async function seedWhenEmpty() {
   const settingsCount = await db.settings.count();
   if (settingsCount === 0) {
     const settings: BusinessSettings = {

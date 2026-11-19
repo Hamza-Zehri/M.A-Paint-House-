@@ -458,6 +458,57 @@ function Shell() {
           <span className="app-footer-credit">Designed &amp; Developed by <b>Engr. Hamza Asad</b></span>
         </footer>
       </main>
+
+      <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
+        <button
+          type="button"
+          className={`mobile-nav-item ${page === "dashboard" ? "active" : ""}`}
+          onClick={() => go("dashboard")}
+          aria-label="Dashboard"
+        >
+          <Icon name="grid" size={19} />
+          <span>Home</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-nav-item mobile-nav-invoice ${page === "invoice" ? "active" : ""}`}
+          onClick={() => { setEditingInvoice(null); go("invoice"); }}
+          onFocus={() => prefetchPage("invoice")}
+          aria-label="New invoice"
+        >
+          <span className="mobile-invoice-icon-wrap"><Icon name="plus" size={22} /></span>
+          <span>Invoice</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-nav-item ${page === "history" ? "active" : ""}`}
+          onClick={() => go("history")}
+          onFocus={() => prefetchPage("history")}
+          aria-label="Invoice history"
+        >
+          <Icon name="file" size={19} />
+          <span>History</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-nav-item ${page === "payments" ? "active" : ""}`}
+          onClick={() => go("payments")}
+          onFocus={() => prefetchPage("payments")}
+          aria-label="Payments"
+        >
+          <Icon name="wallet" size={19} />
+          <span>Payments</span>
+        </button>
+        <button
+          type="button"
+          className="mobile-nav-item"
+          onClick={() => setMobileMenuOpen(true)}
+          aria-label="More navigation options"
+        >
+          <Icon name="menu" size={19} />
+          <span>More</span>
+        </button>
+      </nav>
     </div>
   );
 }
