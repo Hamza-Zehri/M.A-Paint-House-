@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { runTransaction, type Transaction } from "firebase/firestore";
-import { db, docRef, balanceRef, commitWrites, type WriteOp } from "../lib/db";
+import { db, docRef, balanceRef, getCachedDoc, commitWrites, type WriteOp } from "../lib/db";
 import { firestore } from "../lib/firebase";
 import { seedIfEmpty, cleanupLegacySeededData } from "../lib/seed";
 import { toPaisa, uid, percentOf } from "../lib/money";
@@ -635,6 +635,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const a = makeAudit(user, "create", "invoice", invoiceId, "Created invoice");
 
     return guardIdempotent("invoice.create", async () => {
+      // A retry after a timeout must return the saved invoice without opening
+      // another transaction. This check is local, so it cannot trigger the
+      // Firestore SDK's 429 retry storm on the invoice document.
+      const alreadySaved = invoiceById.get(invoiceId);
+      if (alreadySaved) return alreadySaved;
+
       // Resolve prices from the in-memory index; only fetch products missing
       // from local state (rare — e.g. another tab imported a catalogue).
       const invItems: InvoiceItem[] = [];
@@ -651,18 +657,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const status = input.status || "finalized";
       const bonus = input.bonus || false;
 
+      // Customer and settings are already in the workspace snapshot. Reading
+      // them here avoids two more network reads inside the transaction; the
+      // canonical balance document is still read atomically below.
+      const cust = customerById.get(input.customerId);
+      if (!cust) throw new Error("Customer not found");
+      const st = settings;
+      const counter = (Number(st?.invoiceCounter) || 1000) + 1;
+      const number = `${st?.invoicePrefix || "INV"}-${counter}`;
+
       const result = await runTransaction(firestore, async (tx): Promise<InvoiceTxResult> => {
-        const duplicateSnap = await tx.get(docRef("invoices", invoiceId));
-        if (duplicateSnap.exists()) return { inv: duplicateSnap.data() as Invoice, entries: [] };
-
-        const custSnap = await tx.get(docRef("customers", input.customerId));
-        const cust = custSnap.data() as Customer | undefined;
-        if (!cust) throw new Error("Customer not found");
-        const stSnap = await tx.get(docRef("settings", "main"));
-        const st = stSnap.data() as BusinessSettings | undefined;
-        const counter = (Number(st?.invoiceCounter) || 1000) + 1;
-        const number = `${st?.invoicePrefix || "INV"}-${counter}`;
-
         const discountPercent = input.discountPercent !== undefined ? input.discountPercent : cust.discount;
         const discountAmount = percentOf(subtotal, discountPercent);
         const netPayable = subtotal - discountAmount;
@@ -726,7 +730,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (result.audit) setAudit((prev) => [result.audit!, ...prev]);
       return result.inv;
     });
-  }, [user, productById, balancesByCustomer]);
+  }, [user, productById, balancesByCustomer, customerById, invoiceById, settings]);
 
   const updateInvoice = useCallback(async (inv: Invoice) => {
     const next = { ...inv, updatedAt: isoNow() };
@@ -750,11 +754,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const subtotal = sumBy(invItems, (i) => i.lineTotal);
     const a = makeAudit(user, "update", "invoice", id, "Edited invoice");
 
+    // The invoice is already in the workspace snapshot (or Firestore's local
+    // cache). Re-reading it inside the transaction caused the SDK's 429 retry
+    // storm; the balance document still provides atomic conflict detection.
+    const current = invoiceById.get(id) || await getCachedDoc<Invoice>("invoices", id);
+    if (!current) throw new Error("Invoice not found. Please refresh the invoice list and try again.");
+    if (current.status === "cancelled" || current.status === "void") throw new Error("Cancelled invoices cannot be edited.");
+
     const result = await guard("invoice.edit", () => runTransaction(firestore, async (tx) => {
-      const snap = await tx.get(docRef("invoices", id));
-      const current = snap.data() as Invoice | undefined;
-      if (!current) throw new Error("Invoice not found");
-      if (current.status === "cancelled" || current.status === "void") throw new Error("Cancelled invoices cannot be edited.");
       const oldNet = Number(current.netPayable) || 0;
       const discountPercent = input.discountPercent !== undefined ? input.discountPercent : current.discountPercent;
       const discountAmount = percentOf(subtotal, discountPercent);
@@ -791,7 +798,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (result.adjustment) setLedger((prev) => [...prev, result.adjustment!]);
     setAudit((prev) => [a.entry, ...prev]);
     return result.next;
-  }, [user, productById, balancesByCustomer]);
+  }, [user, productById, balancesByCustomer, invoiceById]);
 
   const cancelInvoice = useCallback(async (id: string) => {
     const inv = invoiceById.get(id) || await db.invoices.get(id);

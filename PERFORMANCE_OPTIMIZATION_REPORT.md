@@ -90,6 +90,9 @@ A pre-change checkpoint exists as Git tag `backup/pre-optimization`
 - No full-collection re-fetch after CRUD; targeted local patches reflect the exact documents written.
 - Timeout wrapper on all mutations (15 s). Idempotent mutations retry once only on network/timeout/retryable codes.
 - `resource-exhausted` / HTTP 429 is explicitly **not** retried. A 60-second cooldown is persisted locally, so a reload during quota exhaustion serves cached data instead of starting another SDK retry storm.
+- Invoice create/edit no longer re-read the invoice document inside the transaction. Idempotent retries resolve from the in-memory index or Firestore's local cache, and customer/settings values come from the workspace snapshot. Only the canonical `customerBalances` document is read atomically, so concurrent financial writes still conflict safely. This removed four `BatchGetDocuments` reads per save and eliminated the reported `invoices/inv_...` 429 retry storm.
+- A fetch-level quota watcher records the first Firestore 429 response immediately, so action guards block all later clicks while the SDK finishes retrying the request already in flight.
+- Firestore initialization is idempotent, so Vite HMR cannot re-create the instance with different options.
 - Request deduplication uses prebuilt maps rather than repeated `Array.find`.
 - Last-known-good snapshot cache is written after a successful refresh and after local mutation patches, including product/invoice/payment data.
 - PDF chunks are requested only when a PDF is actually created, then cached by the browser/Vite.
@@ -103,11 +106,11 @@ A pre-change checkpoint exists as Git tag `backup/pre-optimization`
 
 | Metric | Before | After | Change |
 |---|---:|---:|---:|
-| Main JS chunk (raw) | 1,331.5 KB | 949.56 KB | −381.94 KB (−28.7%) |
-| Main JS chunk (gzip) | not captured in baseline | 284.77 KB | — |
-| CSS (raw) | 81.8 KB | 90.06 KB | +8.26 KB |
-| All measured startup assets (raw) | 1,784.6 KB | 1,039.62 KB | −744.98 KB (−41.7%) |
-| Startup assets (gzip) | not captured in baseline | 304.34 KB | — |
+| Main JS chunk (raw) | 1,331.5 KB | 950.84 KB | −380.66 KB (−28.6%) |
+| Main JS chunk (gzip) | not captured in baseline | 285.15 KB | — |
+| CSS (raw) | 81.8 KB | 90.41 KB | +8.61 KB |
+| All measured startup assets (raw) | 1,784.6 KB | 1,041.80 KB | −742.80 KB (−41.6%) |
+| Startup assets (gzip) | not captured in baseline | 305.14 KB | — |
 | Deferred PDF chunks (raw) | loaded upfront | 813.30 KB on demand | 0 KB at startup |
 | Deferred PDF chunks (gzip) | loaded upfront | 248.51 KB on demand | 0 KB at startup |
 
@@ -176,6 +179,9 @@ credentials were available in the harness. No network timings have been invented
   - Reload with a fresh snapshot issued 0 Firestore document-read requests.
   - Legacy cleanup invoked directly succeeded after the rules deploy (flag set, no permission warning).
   - Phone CSS overrides verified in the cascade after the older `display: none !important` bottom-nav rule.
+  - Phone invoice page now renders the product catalogue inline instead of a bottom-sheet popup; the old Add Products buttons are hidden, and a product tap scrolls to the current invoice. Verified in the live DOM and CSS cascade.
+  - Verified no `tx.get(invoices/...)` remains in invoice create/edit paths; the only remaining transaction invoice reads are candidate invoices for atomic payment allocation.
+  - Clean console after reload: zero errors or warnings.
   - Lighthouse (dev server): Best Practices 1.00, SEO 1.00, Accessibility 0.98 (only issue: login page has no `<main>` landmark).
 
 ---
@@ -184,7 +190,7 @@ credentials were available in the harness. No network timings have been invented
 
 1. **First-ever load still reads all business collections.** The store loads 12 collections in one parallel batch; repeat loads within 30 seconds use the updated snapshot. A brand-new device with a very large Firestore database is still limited by the largest collection. Next step: cursor/paged or per-page selective loading.
 2. **Entry bundle remains 950 KB raw / 285 KB gzip.** Firebase SDK + React dominate. Splitting vendor chunks improves caching but does not reduce downloaded bytes much.
-3. **Firestore project quota was exhausted during live testing.** The app now degrades to cached data and stops retry storms, but the Firebase project still needs a quota/usage review in the console if `429 resource-exhausted` persists after the daily reset.
+3. **Firestore project quota was exhausted during live testing.** The app now degrades to cached data, records the first 429 immediately, blocks later clicks during cooldown, and no longer re-reads invoice documents inside invoice transactions. The Firebase project still needs a quota/usage review in the console if `429 resource-exhausted` persists after the daily reset.
 4. **Firestore latency/transaction conflicts not measured live.** Concurrent writes to the same customer intentionally conflict on `customerBalances` and retry; under heavy contention some operations may fail and must be retried by the user.
 5. **Rules and indexes are deployed.** Both commands completed successfully against `ma-paint-house`. Re-run them if these files change.
 6. **Timeout duplicate path UI patch.** If a save commits but the response times out, retries safely return the original record without duplicating data. Related derived rows may require a refresh to appear in the current view; no financial duplication occurs.
@@ -204,7 +210,7 @@ credentials were available in the harness. No network timings have been invented
 
 ## 9. Deployment status
 
-- GitHub: `7c3ff77 Fix phone layout, Firestore permissions, and quota retry storm` pushed to `origin/main`.
+- GitHub: latest commit `Show phone catalogue inline and stop invoice 429 retry storm` pushed to `origin/main` (previous: `Fix phone layout, Firestore permissions, and quota retry storm`).
 - Firestore rules: redeployed to `ma-paint-house` after separating delete permissions from create/update validation.
 - Vercel: production deployment `dpl_9FKXgwW941yL8kzpQrRT3SnRJzyG` is live and aliased to `https://ma-paint-house.vercel.app`.
 - `npx vercel curl https://ma-paint-house.vercel.app` returned the updated HTML with `viewport-fit=cover`, confirming the new build is served.

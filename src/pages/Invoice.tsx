@@ -38,9 +38,9 @@ export default function InvoiceBuilder({
   const [notes, setNotes] = useState(initial?.notes || "");
   const [saving, setSaving] = useState(false);
   const [lastInvoice, setLastInvoice] = useState<any>(null);
-  const [showMobileCatalogue, setShowMobileCatalogue] = useState(false);
   const [draftLoaded, setDraftLoaded] = useState(false);
   const idempotencyKey = useRef(uid());
+  const invoicePanelRef = useRef<HTMLElement | null>(null);
   const editing = initial;
   const { isBusy, lock } = useActionLock();
 
@@ -115,6 +115,17 @@ export default function InvoiceBuilder({
       return [...cur, { productId: p.id, qty: 1, unitPrice: p.price }];
     });
     toast(`Added ${p.name}`, "info");
+  };
+
+  // On a phone the catalogue is shown inline above the invoice. After a tap,
+  // bring the current invoice into view so the added item is immediately clear.
+  const handleAddProduct = (p: Product) => {
+    addProduct(p);
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches) {
+      requestAnimationFrame(() => {
+        invoicePanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
   };
 
   const updateQty = (pid: string, qty: number) =>
@@ -275,7 +286,7 @@ export default function InvoiceBuilder({
                   type="button"
                   className={`product-card ${inCart ? "in-cart" : ""}`}
                   key={p.id}
-                  onClick={() => addProduct(p)}
+                  onClick={() => handleAddProduct(p)}
                 >
                   <div className="paint-can" style={{ "--paint": "#16796f" } as React.CSSProperties}>
                     <span />
@@ -315,7 +326,7 @@ export default function InvoiceBuilder({
         {/* ========================================================= */}
         {/* RIGHT PANEL – CURRENT INVOICE (55%)                       */}
         {/* ========================================================= */}
-        <aside className="invoice-panel">
+        <aside className="invoice-panel" ref={invoicePanelRef}>
           <div className="invoice-top-pane">
             <div className="invoice-top">
               <div>
@@ -407,15 +418,6 @@ export default function InvoiceBuilder({
 
             <div className="line-heading">
               <b>Invoice items ({lines.length})</b>
-              {/* On mobile devices, give a quick button to open catalogue */}
-              <button
-                type="button"
-                className="mobile-add-products-btn"
-                onClick={() => setShowMobileCatalogue(true)}
-              >
-                <Icon name="plus" size={13} />
-                <span>Add Products</span>
-              </button>
             </div>
           </div>
 
@@ -425,15 +427,7 @@ export default function InvoiceBuilder({
               <div className="empty">
                 <Icon name="box" size={24} />
                 <b>No items added yet</b>
-                <span>Click any product from catalogue on the left to add</span>
-                <button
-                  type="button"
-                  className="btn btn-secondary mobile-only-inline-btn"
-                  onClick={() => setShowMobileCatalogue(true)}
-                >
-                  <Icon name="plus" size={14} />
-                  <span>Browse Products Catalogue</span>
-                </button>
+                <span>Select a product from the catalogue to add it here.</span>
               </div>
             ) : (
               detailedLines.map((line) => {
@@ -619,113 +613,6 @@ export default function InvoiceBuilder({
           </div>
         </aside>
       </div>
-
-      {/* Mobile product catalogue bottom sheet / modal (active on phone screens when tapping Add Products) */}
-      {showMobileCatalogue && (
-        <div
-          className="mobile-catalogue-backdrop"
-          onClick={() => setShowMobileCatalogue(false)}
-        >
-          <div className="mobile-catalogue-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="mobile-catalogue-header">
-              <div>
-                <h3>Product Catalogue</h3>
-                <small>{filtered.length} products available</small>
-              </div>
-              <button
-                type="button"
-                className="btn btn-primary mobile-catalogue-done-btn"
-                onClick={() => setShowMobileCatalogue(false)}
-              >
-                <span>Done ({lines.length} items)</span>
-              </button>
-            </div>
-
-            <div className="product-search">
-              <Icon name="search" size={18} />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search product name, category, or code..."
-                autoFocus
-              />
-              {query && (
-                <button
-                  type="button"
-                  className="search-clear-btn"
-                  onClick={() => setQuery("")}
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-
-            <div className="catalogue-families-scroll">
-              <button
-                type="button"
-                className={`family-pill ${selectedFamily === null ? "active" : ""}`}
-                onClick={() => setSelectedFamily(null)}
-              >
-                All families
-              </button>
-              {activeFamilies.map((f) => (
-                  <button
-                    type="button"
-                    className={`family-pill ${selectedFamily === f.id ? "active" : ""}`}
-                    key={f.id}
-                    onClick={() => setSelectedFamily(f.id)}
-                  >
-                    {f.name}
-                  </button>
-                ))}
-            </div>
-
-            <div className="mobile-catalogue-grid">
-              {filtered.map((p) => {
-                const inCart = lineByProductId.get(p.id);
-                return (
-                  <button
-                    type="button"
-                    className={`product-card ${inCart ? "in-cart" : ""}`}
-                    key={p.id}
-                    onClick={() => addProduct(p)}
-                  >
-                    <div className="paint-can" style={{ "--paint": "#16796f" } as React.CSSProperties}>
-                      <span />
-                    </div>
-                    <div className="product-info">
-                      <small>{p.category || p.brand}</small>
-                      <h3>{p.name}</h3>
-                      <span>
-                        {p.code} • {p.size}
-                      </span>
-                      <strong>{formatMoneyShort(p.price)}</strong>
-                    </div>
-                    <span className="add-circle">
-                      {inCart ? <b>{inCart.qty}</b> : <Icon name="plus" size={16} />}
-                    </span>
-                  </button>
-                );
-              })}
-              {filtered.length === 0 && (
-                <div className="catalogue-empty">
-                  <Icon name="search" size={32} />
-                  <p>No products matching &ldquo;{query}&rdquo;</p>
-                  <button
-                    className="btn btn-secondary"
-                    onClick={() => {
-                      setQuery("");
-                      setSelectedFamily(null);
-                    }}
-                  >
-                    Reset filters
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

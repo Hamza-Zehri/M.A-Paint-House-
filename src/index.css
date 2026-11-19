@@ -5301,6 +5301,21 @@ footer span {
     min-width: 0 !important;
   }
 
+  /* Catalogue is part of the invoice page on phones — never a popup. */
+  .invoice-layout > .catalogue {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 12px 12px 6px !important;
+    border-bottom: 1px solid var(--line) !important;
+  }
+  .mobile-add-products-btn,
+  .mobile-only-inline-btn,
+  .mobile-catalogue-backdrop {
+    display: none !important;
+  }
   .invoice-panel {
     padding: 12px 12px calc(24px + env(safe-area-inset-bottom)) !important;
   }

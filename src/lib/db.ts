@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromCache,
   setDoc,
   getDocs,
   getCountFromServer,
@@ -35,6 +36,19 @@ export function docRef(name: string, id: string): DocumentReference {
  */
 export function balanceRef(customerId: string): DocumentReference {
   return doc(firestore, "customerBalances", customerId);
+}
+
+/**
+ * Read a document from Firestore's persistent local cache only. Used to avoid
+ * another network round trip when the workspace already holds the document.
+ */
+export async function getCachedDoc<T>(name: string, id: string): Promise<T | undefined> {
+  try {
+    const snap = await getDocFromCache(docRef(name, id));
+    return snap.exists() ? (snap.data() as T) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export type WriteOp =
