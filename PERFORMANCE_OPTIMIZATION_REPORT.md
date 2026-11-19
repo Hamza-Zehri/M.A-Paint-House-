@@ -41,23 +41,28 @@ A pre-change checkpoint exists as Git tag `backup/pre-optimization`
 - `src/lib/selectors.ts` — indexed selectors, balance rebuild, product search helpers, idempotent ID helper, chunking.
 - `src/lib/pdfLazy.ts` — dynamic PDF facade with `prefetchPdf()`.
 - `src/lib/pdfNames.ts` — lightweight filename helpers with no jsPDF dependency.
+- `src/lib/snapshotCache.ts` — last-known-good workspace snapshot used for instant reloads and quota fallback.
 - `firestore.indexes.json` — deployed index config; intentionally empty because all current queries use Firestore's automatic single-field indexes.
-- `tests/core.test.ts`, `tests/async.test.ts` — Node 25 built-in test runner suites.
+- `tests/core.test.ts`, `tests/async.test.ts`, `tests/snapshot.test.ts` — Node 25 built-in test runner suites.
 - `PERFORMANCE_OPTIMIZATION_REPORT.md` — this report.
 
 ### Modified
 
-- `src/App.tsx` — lazy routes, prefetch, Suspense skeleton, shorter splash, navigation perf marks.
-- `src/store/AppContext.tsx` — derived indexes, targeted patches, batched writes, financial transactions, idempotency, balance documents, paid-amount maintenance.
+- `src/App.tsx` — lazy routes, prefetch, Suspense skeleton, shorter splash, navigation perf marks, phone bottom navigation.
+- `src/index.css` — responsive tables/forms/grids/drawer plus a final phone-breakpoint correction block; viewport-fit safe areas.
+- `index.html` — `viewport-fit=cover` for notched phones.
+- `src/store/AppContext.tsx` — derived indexes, targeted patches, batched writes, financial transactions, idempotency, balance documents, paid-amount maintenance, snapshot cache/cooldown, snapshot refresh on local patches.
 - `src/lib/db.ts` — shared refs, `balanceRef`, write batches of 450, count aggregate helper, batched `clearAll`.
 - `src/lib/types.ts` — optional `idempotencyKey` and `paidAmount` fields.
-- `src/lib/asyncUtils.ts`, `src/lib/perf.ts`, `src/lib/selectors.ts` — hardened for tests/browser use.
+- `src/lib/firebase.ts` — persistent Firestore local cache with multi-tab manager, long-polling retained.
+- `src/lib/asyncUtils.ts`, `src/lib/perf.ts`, `src/lib/selectors.ts` — hardened for tests/browser use; quota errors are no longer retried.
 - `src/hooks/useActionLock.ts` — synchronous ref-based duplicate-click prevention and UI action timing.
-- `src/lib/seed.ts` — cleans stale legacy balance row.
+- `src/lib/seed.ts` — one-time batched legacy cleanup; quota-aware seeding that skips count queries during cooldown.
 - `src/pages/Dashboard.tsx`, `Reports.tsx`, `Ledger.tsx`.
 - `src/pages/AllProducts.tsx`, `Customers.tsx`, `ProductFamilies.tsx`, `PriceManagement.tsx`.
 - `src/pages/Invoice.tsx`, `InvoiceHistory.tsx`, `Payments.tsx`.
-- `firestore.rules`, `firebase.json`, `package.json`.
+- `firestore.rules` — deletes separated from validated create/update so cleanup is no longer denied.
+- `firebase.json`, `package.json`.
 
 ---
 
@@ -71,8 +76,11 @@ A pre-change checkpoint exists as Git tag `backup/pre-optimization`
 6. **Transaction-safe invoice allocation.** `Invoice.paidAmount` is updated atomically while recording or reversing payments, preventing two concurrent payments from over-allocating the same invoice.
 7. **Aggregate counts.** `countDocs()` uses Firestore count aggregates instead of downloading documents just to count them.
 8. **Indexes.** After removing `latestLedgerQuery`, every remaining Firestore query is a single-field equality query (`customerId`, `invoiceId`, or `paymentId`). Firestore provides those single-field indexes automatically, so `firestore.indexes.json` is intentionally empty. An initial composite-index proposal was rejected by Firebase as "not necessary"; it was removed and the empty index set deployed successfully.
-9. **Security rules.** Signed-in non-legacy users required; conservative shape validation for invoices, payments, allocations, ledger, customer balances, customers, settings, and pricing; audit history is append-only.
+9. **Security rules.** Signed-in non-legacy users required; conservative shape validation for invoices, payments, allocations, ledger, customer balances, customers, settings, and pricing; audit history is append-only. Delete operations are now explicitly allowed for trusted users instead of being accidentally denied by `request.resource.data` validation (which is null on delete).
 10. **Parallel independent reads.** Initial `refresh()` uses `Promise.all`; payment candidate invoice reads and balance reads are parallelized where safe.
+11. **Quota-aware seeding and cleanup.** Legacy cleanup now runs once, uses one batched commit, and is skipped during cooldown. Seeding skips all count aggregates when a cached workspace already exists. This removed the repeated `RunAggregationQuery` and permission errors seen on every login.
+12. **Persistent local cache.** Firestore uses `persistentLocalCache` with a multi-tab manager, so the last successful read set survives reloads and can back the UI during a quota event.
+13. **Fresh-snapshot short circuit.** A snapshot updated by any local mutation skips the full 12-collection read for 30 seconds, removing read amplification from quick reloads and tab switches.
 
 ---
 
@@ -81,7 +89,9 @@ A pre-change checkpoint exists as Git tag `backup/pre-optimization`
 - One candidate-invoice query per payment save instead of repeated scans/fetches per allocation.
 - No full-collection re-fetch after CRUD; targeted local patches reflect the exact documents written.
 - Timeout wrapper on all mutations (15 s). Idempotent mutations retry once only on network/timeout/retryable codes.
+- `resource-exhausted` / HTTP 429 is explicitly **not** retried. A 60-second cooldown is persisted locally, so a reload during quota exhaustion serves cached data instead of starting another SDK retry storm.
 - Request deduplication uses prebuilt maps rather than repeated `Array.find`.
+- Last-known-good snapshot cache is written after a successful refresh and after local mutation patches, including product/invoice/payment data.
 - PDF chunks are requested only when a PDF is actually created, then cached by the browser/Vite.
 - Idle prefetch keeps common navigation and PDF creation fast without blocking authentication or initial data load.
 
@@ -93,16 +103,27 @@ A pre-change checkpoint exists as Git tag `backup/pre-optimization`
 
 | Metric | Before | After | Change |
 |---|---:|---:|---:|
-| Main JS chunk (raw) | 1,331.5 KB | 867.65 KB | −463.85 KB (−34.8%) |
-| Main JS chunk (gzip) | not captured in baseline | 261.05 KB | — |
-| CSS (raw) | 81.8 KB | 85.07 KB | +3.27 KB |
-| All measured startup assets (raw) | 1,784.6 KB | 952.72 KB | −831.88 KB (−46.6%) |
-| Startup assets (gzip) | not captured in baseline | 279.58 KB | — |
+| Main JS chunk (raw) | 1,331.5 KB | 949.56 KB | −381.94 KB (−28.7%) |
+| Main JS chunk (gzip) | not captured in baseline | 284.77 KB | — |
+| CSS (raw) | 81.8 KB | 90.06 KB | +8.26 KB |
+| All measured startup assets (raw) | 1,784.6 KB | 1,039.62 KB | −744.98 KB (−41.7%) |
+| Startup assets (gzip) | not captured in baseline | 304.34 KB | — |
 | Deferred PDF chunks (raw) | loaded upfront | 813.30 KB on demand | 0 KB at startup |
 | Deferred PDF chunks (gzip) | loaded upfront | 248.51 KB on demand | 0 KB at startup |
 
 The remaining main chunk is still above Vite's 500 KB warning threshold. It contains React,
-Firebase Auth/Firestore, and the store; it is not PDF code.
+Firebase Auth/Firestore, the store, and the new snapshot/cache logic; it is not PDF code.
+The CSS increase is the consolidated phone/tablet/desktop responsive layer.
+
+### Browser quota/reload check (real dev-server session)
+
+| Check | Result |
+|---|---:|
+| Firestore document-read requests on reload with a fresh snapshot | 0 |
+| Console errors/warnings on that reload | 0 |
+| Legacy cleanup after deploying corrected rules | succeeded, no permission error |
+| Login layout at 390px iframe width | single column, showcase hidden, `scrollWidth === 390` |
+| Phone shell CSS at max-width 768px | off-canvas drawer, `margin-left: 0`, visible 5-item bottom nav, no horizontal overflow |
 
 ### Real browser selector benchmark (Chrome, dev server, dynamic import of `selectors.ts`)
 
@@ -138,32 +159,37 @@ credentials were available in the harness. No network timings have been invented
 
 - `pnpm typecheck` — pass.
 - `pnpm build` — pass.
-- `pnpm test` — 15/15 pass.
-- `pnpm deploy:rules` — pass; `firestore.rules` compiled and released to `ma-paint-house`.
+- `pnpm test` — 17/17 pass.
+- `pnpm deploy:rules` — pass; corrected `firestore.rules` compiled and released to `ma-paint-house` again after the delete-rule fix.
 - `pnpm deploy:indexes` — pass after correcting the index file; final empty index set deployed to `(default)` database.
   - Money/paisa calculations.
   - Indexed selectors, latest balances, invoice balances, ledger rebuild.
   - 100 invoices and 100 products benchmarks.
   - Deterministic idempotency IDs and 20 rapid duplicate-click simulation.
   - Timeout behavior, already-completed operation, retry of transient failures, no retry on validation errors.
-  - Network-error classification and real duration/failure instrumentation.
+  - Network-error classification, quota non-retry, actionable quota message, and real duration/failure instrumentation.
+  - Snapshot cache round-trip and stale-snapshot rejection.
 - Browser smoke test on `http://localhost:8443/`:
-  - Login screen renders.
+  - Login screen renders and is responsive at 390px.
   - `window.__maphPerf` is installed.
-  - Zero console errors.
+  - Zero console errors after quota cooldown/cache fixes.
+  - Reload with a fresh snapshot issued 0 Firestore document-read requests.
+  - Legacy cleanup invoked directly succeeded after the rules deploy (flag set, no permission warning).
+  - Phone CSS overrides verified in the cascade after the older `display: none !important` bottom-nav rule.
   - Lighthouse (dev server): Best Practices 1.00, SEO 1.00, Accessibility 0.98 (only issue: login page has no `<main>` landmark).
 
 ---
 
 ## 7. Remaining bottlenecks / issues needing attention
 
-1. **Initial data load still reads all business collections.** The store loads 12 collections on authentication. This is now one parallel batch, but a large Firestore database will still be limited by the largest collection. Next step: cursor/paged loading or selective collection loading by page.
-2. **Entry bundle remains 867 KB raw / 261 KB gzip.** Firebase SDK + React dominate. Splitting vendor chunks improves caching but does not reduce downloaded bytes much.
-3. **Firestore latency/transaction conflicts not measured live.** Concurrent writes to the same customer intentionally conflict on `customerBalances` and retry; under heavy contention some operations may fail and must be retried by the user.
-4. **Rules and indexes are deployed.** Both commands completed successfully against `ma-paint-house`. Re-run them if these files change.
-5. **Timeout duplicate path UI patch.** If a save commits but the response times out, retries safely return the original record without duplicating data. Related derived rows may require a refresh to appear in the current view; no financial duplication occurs.
-6. **Search behavior note.** `AllProducts` now also matches product brand via the shared search helper. This is additive, not a calculation change.
-7. **Manual authenticated QA still recommended.** Exercise invoice save/share, payment record/reverse/delete, PDF download, import, and settings backup with production-like data and slow-network throttling.
+1. **First-ever load still reads all business collections.** The store loads 12 collections in one parallel batch; repeat loads within 30 seconds use the updated snapshot. A brand-new device with a very large Firestore database is still limited by the largest collection. Next step: cursor/paged or per-page selective loading.
+2. **Entry bundle remains 950 KB raw / 285 KB gzip.** Firebase SDK + React dominate. Splitting vendor chunks improves caching but does not reduce downloaded bytes much.
+3. **Firestore project quota was exhausted during live testing.** The app now degrades to cached data and stops retry storms, but the Firebase project still needs a quota/usage review in the console if `429 resource-exhausted` persists after the daily reset.
+4. **Firestore latency/transaction conflicts not measured live.** Concurrent writes to the same customer intentionally conflict on `customerBalances` and retry; under heavy contention some operations may fail and must be retried by the user.
+5. **Rules and indexes are deployed.** Both commands completed successfully against `ma-paint-house`. Re-run them if these files change.
+6. **Timeout duplicate path UI patch.** If a save commits but the response times out, retries safely return the original record without duplicating data. Related derived rows may require a refresh to appear in the current view; no financial duplication occurs.
+7. **Search behavior note.** `AllProducts` now also matches product brand via the shared search helper. This is additive, not a calculation change.
+8. **Manual authenticated QA still recommended.** Exercise invoice save/share, payment record/reverse/delete, PDF download, import, and settings backup with production-like data and slow-network throttling.
 
 ---
 
@@ -173,3 +199,13 @@ credentials were available in the harness. No network timings have been invented
 - `window.__maphPerf.clear()` resets the rolling buffer.
 - `pnpm test` uses Node 25's built-in TypeScript stripping; no new test dependency was added.
 - Deploy scripts: `pnpm deploy:rules`, `pnpm deploy:indexes`, `pnpm deploy:hosting`.
+
+---
+
+## 9. Deployment status
+
+- GitHub: `7c3ff77 Fix phone layout, Firestore permissions, and quota retry storm` pushed to `origin/main`.
+- Firestore rules: redeployed to `ma-paint-house` after separating delete permissions from create/update validation.
+- Vercel: production deployment `dpl_9FKXgwW941yL8kzpQrRT3SnRJzyG` is live and aliased to `https://ma-paint-house.vercel.app`.
+- `npx vercel curl https://ma-paint-house.vercel.app` returned the updated HTML with `viewport-fit=cover`, confirming the new build is served.
+- Deployment protection (`vercel_authentication`) remains enabled on the Vercel project.
