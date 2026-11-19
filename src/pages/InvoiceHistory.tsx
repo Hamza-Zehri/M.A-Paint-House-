@@ -130,7 +130,7 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
         .filter((a) => a.invoiceId === viewing.id)
         .reduce((s, a) => s + a.amount, 0);
       const vPaid = Math.max(vAllocated, viewing.paymentReceived || 0);
-      const html = getInvoiceHtml(viewing, settings, false, vCustomer, vPaid);
+      const html = getInvoiceHtml(viewing, settings, false, vCustomer, vPaid, true);
       const status = viewing.status === "cancelled" || viewing.status === "void" ? "Cancelled" : viewing.status === "draft" ? "Draft" : vPaid >= viewing.netPayable ? "Paid" : "Partially paid";
       return (
         <div className="invoice-preview-backdrop" onClick={() => { if (!previewBusy) setViewing(null); }}>

@@ -116,6 +116,7 @@ interface ShellOptions {
   watermark?: string;
   heroPills?: string;
   body: string;
+  hideToolbar?: boolean;
 }
 
 function shell({
@@ -130,6 +131,7 @@ function shell({
   watermark,
   heroPills,
   body,
+  hideToolbar = false,
 }: ShellOptions): string {
   const shop = settings?.name || "M.A PAINT HOUSE";
   const currency = settings?.currency || "Rs";
@@ -261,12 +263,12 @@ function shell({
 </style>
 </head>
 <body>
-<div class="toolbar">
+${hideToolbar ? "" : `<div class="toolbar">
   <button class="primary" onclick="window.print()">🖨️ Print / Save as PDF</button>
   <button class="ghost" onclick="downloadReport()">⬇️ Download HTML</button>
   <button class="ghost" onclick="window.close()">✕ Close</button>
   <span class="hint">Tip: choose “Save as PDF” in the print dialog.</span>
-</div>
+</div>`}
 <div class="sheet">
   ${watermark ? `<div class="watermark"><span>${esc(watermark)}</span></div>` : ""}
   <header class="hero">
@@ -351,7 +353,8 @@ export function getInvoiceHtml(
   settings: any,
   autoPrint = false,
   customer?: any,
-  paidOverride?: number
+  paidOverride?: number,
+  hideToolbar = false
 ): string {
   const currency = settings?.currency || "Rs";
   const paid = paidOverride !== undefined ? paidOverride : Number(inv.paymentReceived) || 0;
@@ -439,6 +442,7 @@ export function getInvoiceHtml(
     watermark: isCancelled ? "CANCELLED" : inv.status === "draft" ? "DRAFT" : undefined,
     heroPills: pills,
     body,
+    hideToolbar,
   });
 
   if (autoPrint) {
