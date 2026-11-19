@@ -6,12 +6,16 @@ import { invoicePdfBlob, invoicePdfName } from "../lib/pdfFile";
 import { printInvoiceHtml, getInvoiceHtml } from "../lib/pdf";
 import { sharePdf } from "../lib/share";
 import { appConfirm, toast } from "../lib/dialog";
+import { useActionLock } from "../hooks/useActionLock";
 
 export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void }) {
   const { invoices, settings, customers, allocations, cancelInvoice, deleteInvoice, invoiceBalance } = useApp();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [viewing, setViewing] = useState<any>(null);
+  const [previewBusy, setPreviewBusy] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const { isBusy, lock } = useActionLock();
   const shown = invoices.filter((i) => {
     if (statusFilter !== "all" && i.status !== statusFilter) return false;
     return i.number.toLowerCase().includes(query.toLowerCase()) || i.customerName.toLowerCase().includes(query.toLowerCase());
@@ -104,12 +108,12 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
                     <td className="teal-text">{i.discountPercent}%</td><td><b>{formatMoneyShort(i.netPayable)}</b></td>
                     <td className={invoiceBalance(i.id) > 0 ? "red-text" : ""}>{formatMoneyShort(invoiceBalance(i.id))}</td><td>{i.status}{i.bonus && <span title="Bonus invoice" style={{ marginLeft: 6, color: "#f59e0b" }}>★</span>}</td>
                     <td><div className="row-actions">
-                      <button onClick={() => setViewing(i)} title="View invoice"><Icon name="eye" size={16} /></button>
+                      <button onClick={() => { setViewing(i); setZoom(1); }} title="View invoice"><Icon name="eye" size={16} /></button>
                       <button onClick={() => printInvoiceHtml(i, settings, customer, paid)} title="Print invoice"><Icon name="printer" size={16} /></button>
                       <button onClick={() => shareInvoice(i)} title="Share on WhatsApp"><Icon name="share" size={16} /></button>
                       <button onClick={() => onEdit?.(i)} title="Edit invoice"><Icon name="edit" size={16} /></button>
-                      {i.status === "finalized" && <button onClick={() => cancel(i)} title="Cancel invoice"><Icon name="minus" size={16} /></button>}
-                      <button onClick={() => remove(i)} title="Delete invoice"><Icon name="trash" size={16} /></button>
+                      {i.status === "finalized" && <button disabled={isBusy(`cancel-${i.id}`)} onClick={() => lock(`cancel-${i.id}`, () => cancel(i))} title="Cancel invoice"><Icon name="minus" size={16} /></button>}
+                      <button disabled={isBusy(`delete-${i.id}`)} onClick={() => lock(`delete-${i.id}`, () => remove(i))} title="Delete invoice"><Icon name="trash" size={16} /></button>
                     </div></td>
                   </tr>
                 );
@@ -127,30 +131,51 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
         .reduce((s, a) => s + a.amount, 0);
       const vPaid = Math.max(vAllocated, viewing.paymentReceived || 0);
       const html = getInvoiceHtml(viewing, settings, false, vCustomer, vPaid);
+      const status = viewing.status === "cancelled" || viewing.status === "void" ? "Cancelled" : viewing.status === "draft" ? "Draft" : vPaid >= viewing.netPayable ? "Paid" : "Partially paid";
       return (
-        <div
-          onClick={() => setViewing(null)}
-          style={{
-            position: "fixed", inset: 0, background: "rgba(11,31,58,0.55)",
-            backdropFilter: "blur(4px)", zIndex: 10000,
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: "min(960px, 96vw)", height: "88vh", background: "#fff",
-              borderRadius: 16, overflow: "hidden", boxShadow: "0 24px 70px rgba(11,31,58,0.35)",
-              display: "flex", flexDirection: "column",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1px solid #e3e9f1", background: "#f6f8fb" }}>
-              <b style={{ color: "#0b1f3a" }}>Invoice {viewing.number}</b>
-              <button onClick={() => setViewing(null)} style={{ border: "none", background: "transparent", cursor: "pointer", padding: 4 }} aria-label="Close">
-                <Icon name="close" size={20} />
+        <div className="invoice-preview-backdrop" onClick={() => { if (!previewBusy) setViewing(null); }}>
+          <div className="invoice-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <header className="invoice-preview-header">
+              <div>
+                <div className="invoice-preview-title">Invoice {viewing.number}</div>
+                <div className="invoice-preview-meta">
+                  <span>{viewing.date}</span>
+                  <span className={`status-badge ${status.toLowerCase().replace(/\\s+/g, "-")}`}>{status}</span>
+                  {viewing.bonus && <span className="bonus-badge">Bonus</span>}
+                </div>
+              </div>
+              <div className="invoice-preview-zoom">
+                <button type="button" onClick={() => setZoom((z) => Math.max(0.7, +(z - 0.1).toFixed(1)))} aria-label="Zoom out">−</button>
+                <span>{Math.round(zoom * 100)}%</span>
+                <button type="button" onClick={() => setZoom((z) => Math.min(1.6, +(z + 0.1).toFixed(1)))} aria-label="Zoom in">+</button>
+              </div>
+            </header>
+            <div className="invoice-preview-actions">
+              <button type="button" disabled={!!previewBusy} onClick={async () => { setPreviewBusy("print"); try { printInvoiceHtml(viewing, settings, vCustomer, vPaid); } finally { setPreviewBusy(null); } }}>
+                {previewBusy === "print" ? "Printing..." : "Print"}
               </button>
+              <button type="button" disabled={!!previewBusy} onClick={async () => {
+                setPreviewBusy("download");
+                try {
+                  const blob = invoicePdfBlob(viewing, settings, vCustomer, vPaid);
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url; a.download = invoicePdfName(viewing); a.click();
+                  setTimeout(() => URL.revokeObjectURL(url), 500);
+                } finally { setPreviewBusy(null); }
+              }}>
+                {previewBusy === "download" ? "Downloading..." : "Download PDF"}
+              </button>
+              <button type="button" disabled={!!previewBusy} onClick={async () => { setPreviewBusy("share"); try { await shareInvoice(viewing); } finally { setPreviewBusy(null); } }}>
+                {previewBusy === "share" ? "Sharing..." : "Share"}
+              </button>
+              <button type="button" className="close-btn" onClick={() => setViewing(null)} disabled={!!previewBusy}>Close</button>
             </div>
-            <iframe title={`Invoice ${viewing.number}`} srcDoc={html} style={{ flex: 1, border: "none", width: "100%" }} />
+            <div className="invoice-preview-body">
+              <div className="invoice-preview-frame-wrap" style={{ transform: `scale(${zoom})` }}>
+                <iframe title={`Invoice ${viewing.number}`} srcDoc={html} className="invoice-preview-frame" />
+              </div>
+            </div>
           </div>
         </div>
       );

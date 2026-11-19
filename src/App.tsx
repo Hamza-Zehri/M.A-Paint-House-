@@ -239,10 +239,22 @@ function Shell() {
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   const [splashDone, setSplashDone] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
 
   useEffect(() => {
     const t = setTimeout(() => setSplashDone(true), 950);
     return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
   }, []);
 
   // Close mobile drawer on escape
@@ -380,6 +392,10 @@ function Shell() {
             <div className="date-pill">
               <Icon name="calendar" size={16} />
               <span>{new Date().toLocaleDateString("en-PK", { weekday: "long", day: "numeric", month: "long" })}</span>
+            </div>
+            <div className="connection-pill" style={{ background: online ? "rgba(31,191,156,0.18)" : "rgba(232,93,74,0.22)", color: online ? "#1fbf9c" : "#e85d4a" }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "currentColor", display: "inline-block" }} />
+              <span>{online ? "Online" : "Offline"}</span>
             </div>
           </div>
         </header>

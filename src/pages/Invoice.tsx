@@ -6,6 +6,7 @@ import { invoicePdfBlob, invoicePdfName } from "../lib/pdfFile";
 import { printInvoiceHtml } from "../lib/pdf";
 import { sharePdf } from "../lib/share";
 import { toast } from "../lib/dialog";
+import { useActionLock } from "../hooks/useActionLock";
 import type { Customer, Invoice, Product } from "../lib/types";
 
 interface Line { productId: string; qty: number; unitPrice: number; }
@@ -27,6 +28,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
   const [lastInvoice, setLastInvoice] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<"catalogue" | "invoice">(initial ? "invoice" : "catalogue");
   const editing = initial;
+  const { isBusy, lock } = useActionLock();
 
   useEffect(() => {
     if (initial) {
@@ -451,17 +453,17 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={saving}
-                onClick={() => handleSave(false)}
+                disabled={saving || isBusy("save-invoice")}
+                onClick={() => lock("save-invoice", () => handleSave(false))}
               >
                 <Icon name="check" size={15} />
-                <span>{saving ? "Saving..." : editing ? "Update Invoice" : "Save Invoice"}</span>
+                <span>{saving || isBusy("save-invoice") ? "Saving..." : editing ? "Update Invoice" : "Save Invoice"}</span>
               </button>
               <button
                 type="button"
                 className="btn btn-whatsapp"
-                disabled={saving}
-                onClick={() => handleSave(true)}
+                disabled={saving || isBusy("save-share")}
+                onClick={() => lock("save-share", () => handleSave(true))}
               >
                 <Icon name="share" size={15} />
                 <span>{editing ? "Update & WhatsApp" : "Save & WhatsApp"}</span>

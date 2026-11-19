@@ -5,6 +5,7 @@ import { formatMoneyShort, toPaisa, todayLocalISO } from "../lib/money";
 import { receiptPdfBlob, receiptPdfName } from "../lib/pdfFile";
 import { sharePdf } from "../lib/share";
 import { appConfirm, toast } from "../lib/dialog";
+import { useActionLock } from "../hooks/useActionLock";
 import type { Payment } from "../lib/types";
 
 const METHODS = ["Cash", "Bank transfer", "JazzCash", "EasyPaisa", "Cheque", "Other"];
@@ -21,6 +22,7 @@ export default function Payments() {
   const [editing, setEditing] = useState<Payment | null>(null);
   const [editForm, setEditForm] = useState({ date: "", method: "Cash", reference: "", notes: "" });
   const [monthFilter, setMonthFilter] = useState("all");
+  const { isBusy, lock } = useActionLock();
 
   const startEdit = (p: Payment) => {
     setEditing(p);
@@ -106,7 +108,7 @@ export default function Payments() {
         </div>
         <label>Notes<textarea className="field" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Add optional payment notes..." /></label>
         <div className="after-payment"><span>Balance after payment</span><b>{formatMoneyShort(after)}</b></div>
-        <button className="btn btn-primary full" onClick={handleSave}><Icon name="check" /> Save payment & issue receipt</button>
+        <button className="btn btn-primary full" disabled={isBusy("save-payment")} onClick={() => lock("save-payment", handleSave)}><Icon name="check" /> {isBusy("save-payment") ? "Saving..." : "Save payment & issue receipt"}</button>
       </section>
       <section className="card payments-list">
         <div className="section-head" style={{ flexWrap: "wrap", gap: 8 }}>
@@ -144,7 +146,7 @@ export default function Payments() {
             <strong>{formatMoneyShort(x.amount)}</strong>
             <button className="table-action" onClick={() => startEdit(x)} title="Edit"><Icon name="edit" size={16} /></button>
             <button className="table-action" onClick={() => shareReceipt(x)} title="Share PDF receipt"><Icon name="share" size={16} /></button>
-            <button className="table-action" onClick={() => removePayment(x)} title="Delete payment"><Icon name="trash" size={16} /></button>
+            <button className="table-action" disabled={isBusy(`delete-${x.id}`)} onClick={() => lock(`delete-${x.id}`, () => removePayment(x))} title="Delete payment"><Icon name="trash" size={16} /></button>
           </div>
         ))}
         {shownPayments.length === 0 && <p style={{ padding: 12, color: "var(--muted)" }}>No payments yet</p>}
