@@ -27,6 +27,7 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
   const [saving, setSaving] = useState(false);
   const [lastInvoice, setLastInvoice] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<"catalogue" | "invoice">(initial ? "invoice" : "catalogue");
+  const [showCatalogue, setShowCatalogue] = useState(false);
   const editing = initial;
   const { isBusy, lock } = useActionLock();
 
@@ -123,201 +124,94 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
 
   return (
     <div className="invoice-container">
-      {/* Mobile view switcher tabs */}
-      <div className="invoice-mobile-tabs" role="tablist" aria-label="Invoice navigation">
-        <button
-          role="tab"
-          aria-selected={activeTab === "catalogue"}
-          className={`invoice-tab-btn ${activeTab === "catalogue" ? "active" : ""}`}
-          onClick={() => setActiveTab("catalogue")}
-        >
-          <Icon name="box" size={17} />
-          <span>Product Catalogue ({filtered.length})</span>
-        </button>
-        <button
-          role="tab"
-          aria-selected={activeTab === "invoice"}
-          className={`invoice-tab-btn ${activeTab === "invoice" ? "active" : ""}`}
-          onClick={() => setActiveTab("invoice")}
-        >
-          <Icon name="receipt" size={17} />
-          <span>Current Invoice</span>
-          {lines.length > 0 && (
-            <span className="invoice-tab-badge">{lines.length} · {formatMoneyShort(netPayable)}</span>
-          )}
-        </button>
-      </div>
-
-      <div className={`invoice-layout ${activeTab === "invoice" ? "show-invoice-only" : "show-catalogue-only"}`}>
-        {/* Left Side: Product Catalogue */}
-        <section className="catalogue">
-          <div className="catalogue-head">
+      {/* Current Invoice becomes the main full-width area */}
+      <aside className="invoice-panel" style={{ width: "100%", maxWidth: "100%" }}>
+        <div className="invoice-top-pane">
+          <div className="invoice-top">
             <div>
-              <h2>Product catalogue</h2>
-              <p>Click any product to add it directly to current invoice</p>
+              <span className="invoice-panel-label">{editing ? "Editing invoice" : "Current invoice"}</span>
+              <h2>{editing ? editing.number : `${settings?.invoicePrefix || "INV"}-${(settings?.invoiceCounter || 1000) + 1}`}</h2>
             </div>
-            <span className="catalogue-count-badge">{filtered.length} products</span>
+            <div className="date-control">
+              <Icon name="calendar" size={15} />
+              <div>
+                <small>Date</small>
+                <input
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  aria-label="Invoice date"
+                />
+              </div>
+            </div>
           </div>
 
-          <div className="product-search">
-            <Icon name="search" size={18} />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search product name, category, or code..."
-              aria-label="Search products"
-            />
-            {query && (
-              <button
-                type="button"
-                className="search-clear-btn"
-                onClick={() => setQuery("")}
-                aria-label="Clear search"
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+            <button type="button" className="btn btn-primary" onClick={() => setShowCatalogue(true)}>
+              <Icon name="plus" size={15} /> Add Items
+            </button>
+          </div>
+
+          {editing && (
+            <div className="edit-banner">
+              <span><Icon name="edit" size={14} /> Editing {editing.number}. Ledgers update automatically.</span>
+              <button onClick={() => onDone?.()}>Cancel edit</button>
+            </div>
+          )}
+
+          <div className="invoice-customer-box">
+            <label htmlFor="inv-customer-select">Customer</label>
+            <div className="invoice-customer-row">
+              <select
+                id="inv-customer-select"
+                value={customerId}
+                onChange={(e) => { setCustomerId(e.target.value); setDiscountPercent(null); }}
+                className="invoice-customer-select"
               >
-                ✕
-              </button>
+                <option value="">Select customer...</option>
+                {customers.filter((c) => c.active).map((c) => (
+                  <option key={c.id} value={c.id}>{c.name} ({c.discount}% discount)</option>
+                ))}
+              </select>
+              {customer && <span className="discount-tag">{effectiveDiscount}% discount</span>}
+            </div>
+            {customer && (
+              <div className="customer-prev-balance">
+                Previous balance: <b>{formatMoneyShort(customerBalance(customer.id))}</b>
+              </div>
             )}
           </div>
 
-          <div className="catalogue-families-scroll">
+          <div className="discount-override-row" style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
+            <label style={{ flex: 1 }}>
+              Discount % override
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={effectiveDiscount}
+                disabled={bonus}
+                onChange={(e) => setDiscountPercent(parseFloat(e.target.value) || 0)}
+              />
+            </label>
             <button
               type="button"
-              className={`family-pill ${selectedFamily === null ? "active" : ""}`}
-              onClick={() => setSelectedFamily(null)}
+              className={bonus ? "btn btn-primary" : "btn btn-secondary"}
+              onClick={() => setBonus((v) => !v)}
+              style={{ height: 36 }}
+              title="Mark this invoice as bonus (products free for customer)"
             >
-              All families
+              {bonus ? "Bonus: ON" : "Bonus"}
             </button>
-            {families.filter((f) => f.status === "active").map((f) => (
-              <button
-                type="button"
-                className={`family-pill ${selectedFamily === f.id ? "active" : ""}`}
-                key={f.id}
-                onClick={() => setSelectedFamily(f.id)}
-              >
-                {f.name}
-              </button>
-            ))}
           </div>
 
-          <div className="product-grid">
-            {filtered.map((p) => {
-              const inCart = lines.find((l) => l.productId === p.id);
-              return (
-                <button
-                  type="button"
-                  className={`product-card ${inCart ? "in-cart" : ""}`}
-                  key={p.id}
-                  onClick={() => addProduct(p)}
-                >
-                  <div className="paint-can" style={{ "--paint": "#16796f" } as React.CSSProperties}>
-                    <span />
-                  </div>
-                  <div className="product-info">
-                    <small>{p.category || p.brand}</small>
-                    <h3>{p.name}</h3>
-                    <span>{p.code} • {p.size}</span>
-                    <strong>{formatMoneyShort(p.price)}</strong>
-                  </div>
-                  <span className="add-circle">
-                    {inCart ? <b>{inCart.qty}</b> : <Icon name="plus" size={16} />}
-                  </span>
-                </button>
-              );
-            })}
-            {filtered.length === 0 && (
-              <div className="catalogue-empty">
-                <Icon name="search" size={32} />
-                <p>No products matching &ldquo;{query}&rdquo;</p>
-                <button className="btn btn-secondary" onClick={() => { setQuery(""); setSelectedFamily(null); }}>
-                  Reset filters
-                </button>
-              </div>
-            )}
+          <div className="line-heading">
+            <b>Invoice items</b>
+            <span>{lines.length} {lines.length === 1 ? "item" : "items"}</span>
           </div>
-        </section>
+        </div>
 
-        {/* Right Side: Current Invoice Panel */}
-        <aside className="invoice-panel">
-          <div className="invoice-top-pane">
-            <div className="invoice-top">
-              <div>
-                <span className="invoice-panel-label">{editing ? "Editing invoice" : "Current invoice"}</span>
-                <h2>{editing ? editing.number : `${settings?.invoicePrefix || "INV"}-${(settings?.invoiceCounter || 1000) + 1}`}</h2>
-              </div>
-              <div className="date-control">
-                <Icon name="calendar" size={15} />
-                <div>
-                  <small>Date</small>
-                  <input
-                    type="date"
-                    value={date}
-                    onChange={(e) => setDate(e.target.value)}
-                    aria-label="Invoice date"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {editing && (
-              <div className="edit-banner">
-                <span><Icon name="edit" size={14} /> Editing {editing.number}. Ledgers update automatically.</span>
-                <button onClick={() => onDone?.()}>Cancel edit</button>
-              </div>
-            )}
-
-            <div className="invoice-customer-box">
-              <label htmlFor="inv-customer-select">Customer</label>
-              <div className="invoice-customer-row">
-                <select
-                  id="inv-customer-select"
-                  value={customerId}
-                  onChange={(e) => { setCustomerId(e.target.value); setDiscountPercent(null); }}
-                  className="invoice-customer-select"
-                >
-                  <option value="">Select customer...</option>
-                  {customers.filter((c) => c.active).map((c) => (
-                    <option key={c.id} value={c.id}>{c.name} ({c.discount}% discount)</option>
-                  ))}
-                </select>
-                {customer && <span className="discount-tag">{effectiveDiscount}% discount</span>}
-              </div>
-              {customer && (
-                <div className="customer-prev-balance">
-                  Previous balance: <b>{formatMoneyShort(customerBalance(customer.id))}</b>
-                </div>
-              )}
-            </div>
-
-            <div className="discount-override-row" style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
-              <label style={{ flex: 1 }}>
-                Discount % override
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={effectiveDiscount}
-                  disabled={bonus}
-                  onChange={(e) => setDiscountPercent(parseFloat(e.target.value) || 0)}
-                />
-              </label>
-              <button
-                type="button"
-                className={bonus ? "btn btn-primary" : "btn btn-secondary"}
-                onClick={() => setBonus((v) => !v)}
-                style={{ height: 36 }}
-                title="Mark this invoice as bonus (products free for customer)"
-              >
-                {bonus ? "Bonus: ON" : "Bonus"}
-              </button>
-            </div>
-
-            <div className="line-heading">
-              <b>Invoice items</b>
-              <span>{lines.length} {lines.length === 1 ? "item" : "items"}</span>
-            </div>
-          </div>
-
-          <div className="line-items">
+        <div className="line-items">
             {lines.length === 0 ? (
               <div className="empty">
                 <Icon name="box" size={22} />
@@ -326,9 +220,9 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
                 <button
                   type="button"
                   className="btn btn-secondary invoice-mobile-browse-btn"
-                  onClick={() => setActiveTab("catalogue")}
+                  onClick={() => setShowCatalogue(true)}
                 >
-                  Browse Products Catalogue
+                  Add Items
                 </button>
               </div>
             ) : (
@@ -499,26 +393,100 @@ export default function InvoiceBuilder({ initial = null, onDone }: { initial?: I
             )}
           </div>
         </aside>
-      </div>
 
-      {/* Floating cart bar on mobile when viewing catalogue */}
-      {activeTab === "catalogue" && lines.length > 0 && (
-        <div className="invoice-floating-cart">
-          <div className="floating-cart-summary">
-            <span className="floating-cart-badge">{lines.length}</span>
-            <div>
-              <b>{lines.length} {lines.length === 1 ? "item" : "items"} added</b>
-              <small>Net: {formatMoney(netPayable)}</small>
+      {/* Product selection modal */}
+      {showCatalogue && (
+        <div
+          className="invoice-catalogue-backdrop"
+          onClick={() => setShowCatalogue(false)}
+        >
+          <div className="invoice-catalogue-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="catalogue-head">
+              <div>
+                <h2>Product catalogue</h2>
+                <p>Click any product to add it directly to current invoice</p>
+              </div>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowCatalogue(false)}>
+                Done
+              </button>
+            </div>
+
+            <div className="product-search">
+              <Icon name="search" size={18} />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search product name, category, or code..."
+                aria-label="Search products"
+              />
+              {query && (
+                <button
+                  type="button"
+                  className="search-clear-btn"
+                  onClick={() => setQuery("")}
+                  aria-label="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <div className="catalogue-families-scroll">
+              <button
+                type="button"
+                className={`family-pill ${selectedFamily === null ? "active" : ""}`}
+                onClick={() => setSelectedFamily(null)}
+              >
+                All families
+              </button>
+              {families.filter((f) => f.status === "active").map((f) => (
+                <button
+                  type="button"
+                  className={`family-pill ${selectedFamily === f.id ? "active" : ""}`}
+                  key={f.id}
+                  onClick={() => setSelectedFamily(f.id)}
+                >
+                  {f.name}
+                </button>
+              ))}
+            </div>
+
+            <div className="product-grid">
+              {filtered.map((p) => {
+                const inCart = lines.find((l) => l.productId === p.id);
+                return (
+                  <button
+                    type="button"
+                    className={`product-card ${inCart ? "in-cart" : ""}`}
+                    key={p.id}
+                    onClick={() => addProduct(p)}
+                  >
+                    <div className="paint-can" style={{ "--paint": "#16796f" } as React.CSSProperties}>
+                      <span />
+                    </div>
+                    <div className="product-info">
+                      <small>{p.category || p.brand}</small>
+                      <h3>{p.name}</h3>
+                      <span>{p.code} • {p.size}</span>
+                      <strong>{formatMoneyShort(p.price)}</strong>
+                    </div>
+                    <span className="add-circle">
+                      {inCart ? <b>{inCart.qty}</b> : <Icon name="plus" size={16} />}
+                    </span>
+                  </button>
+                );
+              })}
+              {filtered.length === 0 && (
+                <div className="catalogue-empty">
+                  <Icon name="search" size={32} />
+                  <p>No products matching &ldquo;{query}&rdquo;</p>
+                  <button className="btn btn-secondary" onClick={() => { setQuery(""); setSelectedFamily(null); }}>
+                    Reset filters
+                  </button>
+                </div>
+              )}
             </div>
           </div>
-          <button
-            type="button"
-            className="floating-cart-btn"
-            onClick={() => setActiveTab("invoice")}
-          >
-            <span>Current Invoice</span>
-            <Icon name="arrow" size={16} />
-          </button>
         </div>
       )}
     </div>
