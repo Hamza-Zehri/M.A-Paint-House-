@@ -212,6 +212,6 @@ credentials were available in the harness. No network timings have been invented
 
 - GitHub: latest commit `Show phone catalogue inline and stop invoice 429 retry storm` pushed to `origin/main` (previous: `Fix phone layout, Firestore permissions, and quota retry storm`).
 - Firestore rules: redeployed to `ma-paint-house` after separating delete permissions from create/update validation.
-- Vercel: production deployment `dpl_9FKXgwW941yL8kzpQrRT3SnRJzyG` is live and aliased to `https://ma-paint-house.vercel.app`.
-- `npx vercel curl https://ma-paint-house.vercel.app` returned the updated HTML with `viewport-fit=cover`, confirming the new build is served.
+- Vercel: the latest production deployment is live and aliased to `https://ma-paint-house.vercel.app`; verified main asset `index-ymKLqpr_.js`.
+- `npx vercel curl https://ma-paint-house.vercel.app` returned HTML referencing `index-ymKLqpr_.js` with `viewport-fit=cover`, confirming the new build is served.
 - Deployment protection (`vercel_authentication`) remains enabled on the Vercel project.
