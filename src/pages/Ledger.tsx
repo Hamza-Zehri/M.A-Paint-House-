@@ -1,26 +1,43 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort, formatMoney } from "../lib/money";
-import { statementPdfBlob, statementPdfName } from "../lib/pdfFile";
+import { statementPdfBlob, statementPdfName } from "../lib/pdfLazy";
 import { sharePdf } from "../lib/share";
 import { toast } from "../lib/dialog";
 
 export default function Ledger() {
-  const { customers, ledger, customerBalance, settings } = useApp();
+  const { customers, customerById, ledgerByCustomer, balancesByCustomer, settings } = useApp();
   const [customerId, setCustomerId] = useState(customers[0]?.id || "");
   const [monthFilter, setMonthFilter] = useState("all");
-  const customer = customers.find((c) => c.id === customerId);
-  const baseEntries = ledger.filter((l) => l.customerId === customerId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const monthOptions = Array.from(new Set(baseEntries.map((l) => (l.date || "").slice(0, 7)))).filter(Boolean).sort().reverse();
-  const entries = monthFilter === "all" ? baseEntries : baseEntries.filter((l) => (l.date || "").startsWith(monthFilter));
-  const bal = customer ? customerBalance(customer.id) : 0;
+
+  const customer = customerById.get(customerId);
+
+  const baseEntries = useMemo(
+    () => [...(ledgerByCustomer.get(customerId) || [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    [ledgerByCustomer, customerId],
+  );
+  const monthOptions = useMemo(
+    () => Array.from(new Set(baseEntries.map((l) => (l.date || "").slice(0, 7)))).filter(Boolean).sort().reverse(),
+    [baseEntries],
+  );
+  const entries = useMemo(
+    () => (monthFilter === "all" ? baseEntries : baseEntries.filter((l) => (l.date || "").startsWith(monthFilter))),
+    [baseEntries, monthFilter],
+  );
+  // O(1) index lookup — identical to customerBalance(customer.id).
+  const bal = customer ? balancesByCustomer.get(customer.id) || 0 : 0;
   const closingBal = monthFilter !== "all" && entries.length ? entries[entries.length - 1].balance : bal;
 
-  const shareStatement = async () => {
+  const entryTotals = useMemo(
+    () => entries.reduce((acc, e) => ({ debit: acc.debit + e.debit, credit: acc.credit + e.credit }), { debit: 0, credit: 0 }),
+    [entries],
+  );
+
+  const shareStatement = useCallback(async () => {
     if (!customer) return;
     try {
-      const blob = statementPdfBlob(customer, entries, settings);
+      const blob = await statementPdfBlob(customer, entries, settings);
       const result = await sharePdf({
         blob,
         filename: statementPdfName(customer),
@@ -35,7 +52,7 @@ export default function Ledger() {
     } catch (error: any) {
       toast(error?.message || "Could not create the statement PDF.", "error");
     }
-  };
+  }, [customer, entries, settings, bal]);
 
   return (
     <div className="page">
@@ -56,8 +73,8 @@ export default function Ledger() {
       {customer && (
         <section className="ledger-summary">
           <div><span>Opening balance</span><b>{formatMoneyShort(customer.openingBalance)}</b></div>
-          <div><span>Total debits</span><b>{formatMoneyShort(entries.reduce((s, e) => s + e.debit, 0))}</b></div>
-          <div><span>Total credits</span><b className="teal-text">{formatMoneyShort(entries.reduce((s, e) => s + e.credit, 0))}</b></div>
+          <div><span>Total debits</span><b>{formatMoneyShort(entryTotals.debit)}</b></div>
+          <div><span>Total credits</span><b className="teal-text">{formatMoneyShort(entryTotals.credit)}</b></div>
           <div className="outstanding"><span>Closing balance</span><b>{formatMoneyShort(closingBal)}</b></div>
         </section>
       )}

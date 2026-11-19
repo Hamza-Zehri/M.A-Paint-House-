@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort } from "../lib/money";
@@ -5,13 +6,39 @@ import { formatMoneyShort } from "../lib/money";
 const HERO_COLOURS = ["#f97362", "#f4b740", "#1fbf9c", "#4a8fe7", "#9b6cf2"];
 
 export default function Dashboard({ go }: { go: (p: any) => void }) {
-  const { customers, invoices, payments, customerBalance } = useApp();
-  const activeCustomers = customers.filter((c) => c.active).length;
-  const totalInvoiced = invoices.filter((i) => i.status === "finalized").reduce((s, i) => s + i.netPayable, 0);
-  const totalPayments = payments.reduce((s, p) => s + p.amount, 0);
-  const totalOutstanding = customers.reduce((s, c) => s + Math.max(0, customerBalance(c.id)), 0);
-  const recentInvoices = [...invoices].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
-  const recentPayments = [...payments].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
+  const { customers, invoices, payments, balancesByCustomer } = useApp();
+
+  const stats = useMemo(() => {
+    let activeCustomers = 0;
+    let accountsWithBalance = 0;
+    let totalOutstanding = 0;
+    for (const c of customers) {
+      if (c.active) activeCustomers++;
+      // O(1) index lookup — identical to customerBalance(c.id).
+      const balance = balancesByCustomer.get(c.id) || 0;
+      if (balance > 0) accountsWithBalance++;
+      totalOutstanding += Math.max(0, balance);
+    }
+
+    let totalInvoiced = 0;
+    for (const i of invoices) {
+      if (i.status === "finalized") totalInvoiced += i.netPayable;
+    }
+
+    let totalPayments = 0;
+    for (const p of payments) totalPayments += p.amount;
+
+    return { activeCustomers, accountsWithBalance, totalOutstanding, totalInvoiced, totalPayments };
+  }, [customers, invoices, payments, balancesByCustomer]);
+
+  const recentInvoices = useMemo(
+    () => [...invoices].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5),
+    [invoices],
+  );
+  const recentPayments = useMemo(
+    () => [...payments].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5),
+    [payments],
+  );
 
   return (
     <div className="page">
@@ -70,8 +97,8 @@ export default function Dashboard({ go }: { go: (p: any) => void }) {
         <div className="dash-hero-panel">
           <div className="dash-hero-stat dash-hero-stat-wide">
             <span>Outstanding receivables</span>
-            <b>{formatMoneyShort(totalOutstanding)}</b>
-            <small>{customers.filter((c) => customerBalance(c.id) > 0).length} account(s) with a balance</small>
+            <b>{formatMoneyShort(stats.totalOutstanding)}</b>
+            <small>{stats.accountsWithBalance} account(s) with a balance</small>
           </div>
           <div className="dash-hero-stat">
             <span>Invoices</span>
@@ -79,7 +106,7 @@ export default function Dashboard({ go }: { go: (p: any) => void }) {
           </div>
           <div className="dash-hero-stat">
             <span>Customers</span>
-            <b>{activeCustomers}</b>
+            <b>{stats.activeCustomers}</b>
           </div>
         </div>
       </section>
@@ -88,10 +115,10 @@ export default function Dashboard({ go }: { go: (p: any) => void }) {
           METRIC CARDS
       ══════════════════════════════════════════════ */}
       <section className="metrics-grid">
-        <div className="metric-card navy"><div className="metric-head"><span className="metric-icon"><Icon name="file" size={20} /></span></div><p>Total invoiced</p><h3>{formatMoneyShort(totalInvoiced)}</h3></div>
-        <div className="metric-card teal"><div className="metric-head"><span className="metric-icon"><Icon name="wallet" size={20} /></span></div><p>Payments received</p><h3>{formatMoneyShort(totalPayments)}</h3></div>
-        <div className="metric-card red"><div className="metric-head"><span className="metric-icon"><Icon name="clock" size={20} /></span></div><p>Outstanding receivables</p><h3>{formatMoneyShort(totalOutstanding)}</h3></div>
-        <div className="metric-card blue"><div className="metric-head"><span className="metric-icon"><Icon name="users" size={20} /></span></div><p>Active customers</p><h3>{activeCustomers}</h3></div>
+        <div className="metric-card navy"><div className="metric-head"><span className="metric-icon"><Icon name="file" size={20} /></span></div><p>Total invoiced</p><h3>{formatMoneyShort(stats.totalInvoiced)}</h3></div>
+        <div className="metric-card teal"><div className="metric-head"><span className="metric-icon"><Icon name="wallet" size={20} /></span></div><p>Payments received</p><h3>{formatMoneyShort(stats.totalPayments)}</h3></div>
+        <div className="metric-card red"><div className="metric-head"><span className="metric-icon"><Icon name="clock" size={20} /></span></div><p>Outstanding receivables</p><h3>{formatMoneyShort(stats.totalOutstanding)}</h3></div>
+        <div className="metric-card blue"><div className="metric-head"><span className="metric-icon"><Icon name="users" size={20} /></span></div><p>Active customers</p><h3>{stats.activeCustomers}</h3></div>
       </section>
 
       {/* ══════════════════════════════════════════════

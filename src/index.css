@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+﻿@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
 @import "tailwindcss";
 
 :root {
@@ -37,6 +37,29 @@
 .app-shell {
   min-height: 100vh;
   display: flex;
+}
+.app-shell.invoice-active {
+  height: 100dvh;
+  overflow: hidden;
+}
+.app-shell.invoice-active .main {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+.app-shell.invoice-active .topbar {
+  flex: 0 0 auto;
+}
+.app-shell.invoice-active .main-content-area {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.app-shell.invoice-active .app-footer {
+  display: none;
 }
 .sidebar {
   position: fixed;
@@ -1218,16 +1241,19 @@ td b {
 }
 .invoice-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(390px, 0.85fr);
-  height: calc(100vh - 64px);
-  max-height: calc(100vh - 64px);
+  grid-template-columns: 45fr 55fr;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 .catalogue {
   height: 100%;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 24px 24px 40px 30px;
+  padding: 16px 20px 30px;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
 }
@@ -1395,17 +1421,22 @@ td b {
 .invoice-panel {
   background: #fff;
   border-left: 1px solid #dfe5e9;
-  padding: 14px 18px 12px;
+  padding: 8px 12px 6px;
   box-shadow: -4px 0 20px #17304707;
-  display: flex;
-  flex-direction: column;
+  display: block;
   height: 100%;
   max-height: 100%;
-  overflow-y: auto !important;
+  min-height: 0;
+  overflow-y: auto;
   overflow-x: hidden;
-  position: relative;
+  overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
+  position: relative;
+}
+.invoice-panel .invoice-top-pane,
+.invoice-panel .invoice-customer-box {
+  flex: 0 0 auto;
 }
 .invoice-top-pane {
   flex-shrink: 0;
@@ -1472,7 +1503,8 @@ td b {
   display: flex;
   justify-content: space-between;
   border-bottom: 1px solid var(--line);
-  padding-bottom: 9px;
+  padding-bottom: 4px;
+  margin-bottom: 2px;
 }
 .line-heading b {
   font-size: 9.5px;
@@ -1482,15 +1514,15 @@ td b {
   color: #8c97a1;
 }
 .line-items {
-  flex: 1 1 0%;
-  min-height: 120px;
+  flex: none;
+  min-height: 0;
   max-height: none;
+  height: auto;
+  overflow: visible;
   overflow-y: visible;
-  overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
-  padding-right: 6px;
-  margin: 6px 0;
+  overflow-x: visible;
+  padding-right: 0;
+  margin: 0;
 }
 .line-item {
   padding: 10px 1px;
@@ -1542,8 +1574,8 @@ td b {
   font-size: 10px;
 }
 .empty {
-  padding: 14px 10px;
-  min-height: 70px;
+  padding: 8px 10px;
+  min-height: 48px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1567,22 +1599,21 @@ td b {
 }
 .invoice-bottom-pane {
   flex-shrink: 0;
-  margin-top: auto;
+  margin-top: 10px;
   border-top: 1px solid #dbe2e7;
-  padding-top: 6px;
-  position: sticky;
-  bottom: 0;
+  padding-top: 12px;
+  padding-bottom: 4px;
   background: #ffffff;
   z-index: 5;
 }
 .invoice-totals {
-  padding-top: 2px;
+  padding-top: 0;
 }
 .invoice-totals > div {
   display: flex;
   justify-content: space-between;
-  padding: 3px 0;
-  font-size: 11px;
+  padding: 5px 0;
+  font-size: 12px;
 }
 .invoice-totals span {
   color: #6f7c88;
@@ -1593,39 +1624,46 @@ td b {
 .discount-row small {
   background: #e8f6f2;
   color: var(--teal);
-  padding: 2px 5px;
+  padding: 3px 7px;
   border-radius: 7px;
   margin-left: 4px;
+  font-size: 10px;
 }
 .invoice-totals .net-total {
-  border-top: 1px dashed #d6dde2;
-  margin-top: 4px;
-  padding-top: 6px;
+  border-top: 1px solid #e2e8f0;
+  margin-top: 10px;
+  padding-top: 10px;
   align-items: center;
 }
 .net-total span {
   font-weight: 700;
   color: var(--navy);
-  font-size: 12px;
+  font-size: 13px;
 }
 .net-total strong {
-  font-size: 16px;
+  font-size: 19px;
 }
 .invoice-buttons {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 8px;
+  margin-top: 14px;
+}
+.invoice-buttons .btn {
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 .invoice-buttons .save-wide {
   grid-column: auto;
 }
 .invoice-buttons .clear-btn {
   grid-column: auto;
-  font-size: 10.5px;
+  font-size: 12px;
   color: #9a4c4c;
-  padding: 6px 4px;
-  border-radius: 8px;
+  padding: 0 10px;
+  min-height: 40px;
+  border-radius: 9px;
   border: 1px solid #fecaca;
   background: #fff5f5;
   transition: all 0.15s ease;
@@ -2267,12 +2305,15 @@ footer span {
 /*  RESPONSIVE ADAPTATIONS (LAPTOP, TABLET & PHONE)              */
 /* ============================================================= */
 
-/* ── Modern Invoice Container & Mobile Enhancements ─────────── */
+/* â”€â”€ Modern Invoice Container & Mobile Enhancements â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .invoice-container {
   display: flex;
   flex-direction: column;
   width: 100%;
-  min-height: calc(100vh - 64px);
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
   position: relative;
 }
 
@@ -2477,8 +2518,8 @@ footer span {
   background: #f8fafc;
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 10px 12px;
-  margin: 12px 0 8px;
+  padding: 4px 6px;
+  margin: 4px 0 2px;
 }
 
 .invoice-customer-box label {
@@ -2534,7 +2575,7 @@ footer span {
 
 .discount-override-row input {
   width: 76px;
-  height: 32px;
+  height: 28px;
   text-align: center;
   border-radius: 7px;
   border: 1px solid var(--line);
@@ -2594,21 +2635,34 @@ footer span {
 }
 
 .invoice-payment-block {
-  padding: 6px 0 4px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.invoice-payment-block .field {
+  height: 38px;
+  margin-top: 6px;
+  font-size: 13px;
 }
 
 .invoice-payment-block label {
-  font-size: 10.5px;
+  font-size: 11.5px;
   font-weight: 600;
   display: block;
-  margin-bottom: 3px;
+  margin-bottom: 5px;
   color: #475569;
 }
 
 .balance-after-pill {
-  font-size: 10.5px;
-  color: var(--muted);
-  margin-top: 4px;
+  display: inline-block;
+  font-size: 12px;
+  color: #0f766e;
+  background: #e8f6f2;
+  padding: 6px 10px;
+  border-radius: 8px;
+  margin-top: 8px;
 }
 
 .balance-after-pill b {
@@ -2624,22 +2678,23 @@ footer span {
 }
 
 .invoice-notes-block {
-  padding: 2px 0 6px;
+  padding: 12px 0 0;
 }
 
 .invoice-notes-block label {
-  font-size: 10px;
+  font-size: 11.5px;
   font-weight: 600;
   display: block;
-  margin-bottom: 2px;
+  margin-bottom: 6px;
   color: #475569;
 }
 
 .invoice-notes-textarea {
-  min-height: 32px !important;
-  height: 32px;
-  font-size: 11px;
-  padding: 5px 8px;
+  min-height: 48px !important;
+  height: 48px;
+  font-size: 12px;
+  padding: 9px 10px;
+  line-height: 1.4;
   resize: vertical;
 }
 
@@ -2666,7 +2721,7 @@ footer span {
   text-align: center;
 }
 
-/* ── Shell & Navigation UI Enhancements ────────────────────── */
+/* â”€â”€ Shell & Navigation UI Enhancements â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .sidebar-backdrop {
   display: none;
   position: fixed;
@@ -2801,46 +2856,75 @@ footer span {
   transform: scale(1.08);
 }
 
-/* ── Laptops & Large Desktops (min-width: 1024px) ───────────── */
-@media (min-width: 1024px) {
+/* ── Laptops, Tablets & Desktops (min-width: 769px) ───────────── */
+@media (min-width: 769px) {
   .invoice-container {
-    height: calc(100vh - 64px);
-    max-height: calc(100vh - 64px);
-    overflow: hidden;
+    height: 100% !important;
+    max-height: 100% !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
   }
   .invoice-layout {
     display: grid !important;
-    grid-template-columns: minmax(0, 1.35fr) minmax(390px, 0.85fr) !important;
+    grid-template-columns: 45fr 55fr !important;
+    width: 100% !important;
     height: 100% !important;
     max-height: 100% !important;
+    min-height: 0 !important;
     overflow: hidden !important;
   }
   .catalogue {
     display: block !important;
+    width: 100% !important;
     height: 100% !important;
-    overflow-y: auto !important;
-    padding: 18px 22px 30px;
-  }
-  .product-grid {
-    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)) !important;
-  }
-  .invoice-panel {
-    display: flex !important;
-    height: 100% !important;
-    max-height: 100% !important;
     overflow-y: auto !important;
     overflow-x: hidden !important;
-    border-left: 1px solid #dfe5e9 !important;
-    padding: 14px 18px 10px !important;
-    scrollbar-width: thin;
-    scrollbar-color: #cbd5e1 transparent;
+    padding: 16px 20px 30px !important;
   }
+  .product-grid {
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)) !important;
+  }
+  .invoice-panel {
+    display: block !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    overscroll-behavior: contain !important;
+    border-left: 1px solid #dfe5e9 !important;
+    padding: 12px 18px 10px !important;
+  }
+  .line-items {
+    flex: none !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    overflow-y: visible !important;
+    overflow-x: visible !important;
+    padding-right: 0 !important;
+    margin: 4px 0 !important;
+  }
+  .invoice-bottom-pane {
+    position: static !important;
+    margin-top: 10px !important;
+    border-top: 1px solid #dbe2e7 !important;
+    padding-top: 12px !important;
+    padding-bottom: 4px !important;
+    flex: none !important;
+    background: #ffffff !important;
+  }
+  .mobile-add-products-btn,
+  .mobile-only-inline-btn,
   .invoice-mobile-tabs,
   .invoice-floating-cart,
   .invoice-mobile-browse-btn,
   .mobile-bottom-nav,
-  .mobile-menu-toggle,
-  .sidebar-close-btn {
+  .mobile-catalogue-backdrop {
     display: none !important;
   }
 }
@@ -2856,13 +2940,10 @@ footer span {
   .page {
     padding: 20px 24px;
   }
-  .product-grid {
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)) !important;
-  }
 }
 
-/* ── Small Laptops & Tablets (max-width: 1023px) ─────────────── */
-@media (max-width: 1023px) {
+/* ── Small Laptops & Tablets (769px - 1023px) ─────────────────── */
+@media (max-width: 1023px) and (min-width: 769px) {
   .sidebar {
     position: fixed;
     z-index: 50;
@@ -2893,60 +2974,6 @@ footer span {
   }
   .page {
     padding: 18px 20px;
-  }
-
-  /* Responsive Invoice on Tablet */
-  .invoice-container {
-    height: auto;
-    min-height: calc(100vh - 72px);
-    display: block;
-  }
-  .invoice-mobile-tabs {
-    display: flex;
-    top: 72px;
-  }
-  .invoice-layout {
-    display: block !important;
-    height: auto !important;
-    max-height: none !important;
-    overflow: visible !important;
-  }
-  .invoice-layout.show-catalogue-only .catalogue {
-    display: block !important;
-    height: auto !important;
-    overflow-y: visible !important;
-    padding: 16px 20px 80px;
-  }
-  .invoice-layout.show-catalogue-only .invoice-panel {
-    display: none !important;
-  }
-  .invoice-layout.show-invoice-only .catalogue {
-    display: none !important;
-  }
-  .invoice-layout.show-invoice-only .invoice-panel {
-    display: flex !important;
-    border-left: none !important;
-    height: auto !important;
-    max-height: none !important;
-    overflow: visible !important;
-    padding: 20px;
-    box-shadow: none !important;
-  }
-  .product-grid {
-    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)) !important;
-  }
-  .line-items {
-    max-height: none !important;
-    overflow: visible !important;
-    overflow-y: visible !important;
-    flex: none !important;
-    padding-right: 0 !important;
-    height: auto !important;
-  }
-  .invoice-bottom-pane {
-    position: static !important;
-    margin-top: 14px !important;
-    padding-bottom: 20px !important;
   }
   .metrics-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -3001,21 +3028,31 @@ footer span {
   }
 
   /* Invoice screen on mobile */
-  .invoice-mobile-tabs {
-    top: 60px;
-    padding: 6px 10px;
-    gap: 6px;
+  .invoice-container {
+    height: auto !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    display: block !important;
   }
-  .invoice-tab-btn {
-    min-height: 40px;
-    font-size: 11px;
-    padding: 0 8px;
+  .invoice-layout {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
   }
-  .invoice-layout.show-catalogue-only .catalogue {
-    padding: 12px 10px 80px;
+  .invoice-layout > .catalogue {
+    display: none !important;
   }
-  .invoice-layout.show-invoice-only .invoice-panel {
-    padding: 14px 10px 40px;
+  .invoice-layout > .invoice-panel {
+    display: block !important;
+    border-left: none !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 14px 12px 30px !important;
+    box-shadow: none !important;
   }
   .product-grid {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important;
@@ -3070,6 +3107,7 @@ footer span {
     overflow: visible !important;
     overflow-y: visible !important;
     flex: none !important;
+    min-height: 0 !important;
     padding-right: 0 !important;
     height: auto !important;
   }
@@ -3077,6 +3115,27 @@ footer span {
     position: static !important;
     margin-top: 14px !important;
     padding-bottom: 24px !important;
+    flex: none !important;
+  }
+  .mobile-add-products-btn {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--teal);
+    background: #edf7f5;
+    border: 1px solid #cce8e3;
+    border-radius: 7px;
+  }
+  .mobile-only-inline-btn {
+    display: inline-flex !important;
+    margin-top: 8px;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    padding: 8px 14px;
   }
   .invoice-buttons {
     grid-template-columns: 1fr;
@@ -3184,7 +3243,7 @@ footer span {
   }
 }
 
-/* ── Extra Small Phones (max-width: 420px) ───────────────────── */
+/* â”€â”€ Extra Small Phones (max-width: 420px) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 @media (max-width: 420px) {
   .metrics-grid {
     grid-template-columns: 1fr 1fr;
@@ -3205,7 +3264,7 @@ footer span {
 }
 
 /* ============================================================= */
-/*  Login experience — paint shop theme                          */
+/*  Login experience â€” paint shop theme                          */
 /* ============================================================= */
 .login-page {
   position: relative;
@@ -4365,10 +4424,10 @@ footer span {
 }
 
 /* ================================================================
-   COLOURFUL THEME — matching login screen paint-house aesthetic
+   COLOURFUL THEME â€” matching login screen paint-house aesthetic
    ================================================================ */
 
-/* ── App background — warm tinted gradient ───────────────────── */
+/* â”€â”€ App background â€” warm tinted gradient â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 @layer base {
   body {
     background:
@@ -4379,7 +4438,7 @@ footer span {
   }
 }
 
-/* ── Topbar — vivid gradient bar ─────────────────────────────── */
+/* â”€â”€ Topbar â€” vivid gradient bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .topbar {
   background: linear-gradient(105deg, #0a1e3b 0%, #0d3057 55%, #0b5257 100%);
   border-bottom: none;
@@ -4400,7 +4459,7 @@ footer span {
   opacity: 0.75;
 }
 
-/* ── Topbar New Invoice button — coral-amber gradient ────────── */
+/* â”€â”€ Topbar New Invoice button â€” coral-amber gradient â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .top-new-invoice-vivid {
   min-height: 40px;
   padding: 0 18px;
@@ -4418,7 +4477,7 @@ footer span {
   box-shadow: 0 12px 28px #f4b74060, inset 0 1px #ffffffa0;
 }
 
-/* ── Sidebar swatches ────────────────────────────────────────── */
+/* â”€â”€ Sidebar swatches â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .sidebar-swatches {
   display: flex;
   gap: 4px;
@@ -4431,7 +4490,7 @@ footer span {
   opacity: 0.75;
 }
 
-/* ── Sidebar nav — New Invoice button highlight ──────────────── */
+/* â”€â”€ Sidebar nav â€” New Invoice button highlight â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .sidebar nav button.nav-invoice-btn {
   background: linear-gradient(90deg, #f97362 0%, #f4b740 100%);
   color: #1a0800;
@@ -4451,7 +4510,7 @@ footer span {
   box-shadow: 0 8px 20px #f9736250;
 }
 
-/* ── Merged hero — badge + eyebrow top row ───────────────────── */
+/* â”€â”€ Merged hero â€” badge + eyebrow top row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .dash-hero-top-row {
   display: flex;
   align-items: center;
@@ -4489,7 +4548,7 @@ footer span {
   50% { box-shadow: 0 0 0 9px #f4b74010; }
 }
 
-/* Merged heading — gradient "New Invoice" + plain subtitle */
+/* Merged heading â€” gradient "New Invoice" + plain subtitle */
 .dash-hero-merged-title {
   margin: 10px 0 0;
   line-height: 1.08;
@@ -4518,7 +4577,7 @@ footer span {
 
 
 
-/* ── Metric cards — more vivid gradients ─────────────────────── */
+/* â”€â”€ Metric cards â€” more vivid gradients â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .metric-card.navy {
   background: linear-gradient(145deg, #0d2545 0%, #12345f 100%);
   color: #fff;
@@ -4570,7 +4629,7 @@ footer span {
   color: #fff;
 }
 
-/* ── Shortcut buttons — vivid gradient backgrounds ───────────── */
+/* â”€â”€ Shortcut buttons â€” vivid gradient backgrounds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .dash-shortcut-grid > button {
   background: #fff;
   border-color: #e8eef4;
@@ -4584,7 +4643,7 @@ footer span {
 .dash-shortcut-icon.azure { background: linear-gradient(135deg, #edf3ff, #d9e8ff); color: #416aa1; }
 .dash-shortcut-icon.violet { background: linear-gradient(135deg, #f4eeff, #e9d9ff); color: #7c4dd4; }
 
-/* ── Shortcuts section — more colour ─────────────────────────── */
+/* â”€â”€ Shortcuts section â€” more colour â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .dash-shortcuts {
   background:
     radial-gradient(500px 200px at 100% 0%, #1fbf9c14, transparent 65%),
@@ -4593,13 +4652,13 @@ footer span {
     #fff;
 }
 
-/* ── Cards — slight colour tint ─────────────────────────────── */
+/* â”€â”€ Cards â€” slight colour tint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .card {
   background: linear-gradient(180deg, #fff 0%, #f9fafb 100%);
 }
 
 
-/* ── CSV Import — status feedback banners ───────────────────── */
+/* â”€â”€ CSV Import â€” status feedback banners â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .import-status {
   display: flex;
   align-items: center;
@@ -4671,7 +4730,7 @@ footer span {
 .import-status--success .import-status-icon { background: #087b70; }
 .import-status--error .import-status-icon   { background: #c94141; }
 
-/* ── Developer Credit — sidebar bottom tag ───────────────────── */
+/* â”€â”€ Developer Credit â€” sidebar bottom tag â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .sidebar-dev-credit {
   display: flex;
   align-items: center;
@@ -4695,7 +4754,7 @@ footer span {
   flex-shrink: 0;
 }
 
-/* ── Developer Credit — main app footer ──────────────────────── */
+/* â”€â”€ Developer Credit â€” main app footer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .app-footer {
   display: flex;
   align-items: center;
@@ -4715,7 +4774,7 @@ footer span {
   font-weight: 700;
 }
 
-/* ── Developer Credit — login screen (login-credit) ─────────── */
+/* â”€â”€ Developer Credit â€” login screen (login-credit) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .login-credit {
   display: flex;
   align-items: center;
@@ -4734,7 +4793,7 @@ footer span {
   background: linear-gradient(90deg, transparent, #d0dce8, transparent);
 }
 
-/* ── Developer Credit — Settings page card ───────────────────── */
+/* â”€â”€ Developer Credit â€” Settings page card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .settings-credit-section {
   background: linear-gradient(135deg, #f8fafc 0%, #edf3ff 100%);
   border: 1px solid #d8e4f0;
@@ -4964,65 +5023,62 @@ footer span {
   .invoice-preview-body { padding: 10px; }
   .invoice-preview-frame { width: 100%; min-height: 60vh; }
 }
-/* Make invoice tabs available on desktop so the catalogue can be toggled
-   without keeping the current invoice panel scrollable. */
-.invoice-mobile-tabs {
-  display: flex;
-}
-@media (min-width: 901px) {
-  .invoice-layout.show-catalogue-only .invoice-panel {
-    display: none !important;
-  }
-  .invoice-layout.show-invoice-only .catalogue {
-    display: none !important;
-  }
-  .invoice-layout.show-catalogue-only .catalogue,
-  .invoice-layout.show-invoice-only .invoice-panel {
-    width: 100% !important;
-    max-width: 100% !important;
-  }
-}
-/* Invoice catalogue modal */
-.invoice-catalogue-backdrop {
+/* Mobile product catalogue bottom sheet / modal */
+.mobile-catalogue-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(11, 31, 58, 0.55);
   backdrop-filter: blur(4px);
   z-index: 10000;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  padding: 16px;
 }
-.invoice-catalogue-modal {
-  width: min(1100px, 96vw);
+.mobile-catalogue-modal {
+  width: 100%;
+  height: 90vh;
   max-height: 90vh;
   background: #fff;
-  border-radius: 18px;
-  overflow: hidden;
+  border-radius: 20px 20px 0 0;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 30px 90px rgba(11, 31, 58, 0.35);
+  padding: 16px 14px 24px;
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.25);
+  animation: slideUpMobileCatalogue 0.22s ease-out;
 }
-.invoice-catalogue-modal .catalogue {
+@keyframes slideUpMobileCatalogue {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.mobile-catalogue-header {
   display: flex;
-  flex-direction: column;
-  height: 100%;
-  max-height: 90vh;
-  padding: 16px;
-  overflow: hidden;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
 }
-.invoice-catalogue-modal .product-grid {
-  flex: 1 1 auto;
+.mobile-catalogue-header h3 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--navy);
+  margin: 0;
+}
+.mobile-catalogue-header small {
+  font-size: 10px;
+  color: #64748b;
+}
+.mobile-catalogue-done-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+}
+.mobile-catalogue-grid {
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
-  min-height: 200px;
-}
-@media (max-width: 768px) {
-  .invoice-catalogue-backdrop { padding: 0; }
-  .invoice-catalogue-modal {
-    width: 100vw;
-    height: 100vh;
-    max-height: 100vh;
-    border-radius: 0;
-  }
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+  padding: 10px 0 20px;
 }

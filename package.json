@@ -8,9 +8,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts",
     "deploy": "vite build && npx firebase deploy --project ma-paint-house",
     "deploy:hosting": "vite build && npx firebase deploy --only hosting --project ma-paint-house",
     "deploy:rules": "npx firebase deploy --only firestore:rules --project ma-paint-house",
+    "deploy:indexes": "npx firebase deploy --only firestore:indexes --project ma-paint-house",
     "format": "oxfmt"
   },
   "dependencies": {

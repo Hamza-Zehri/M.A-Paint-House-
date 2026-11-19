@@ -4,32 +4,79 @@ import {
   getDoc,
   setDoc,
   getDocs,
+  getCountFromServer,
   deleteDoc,
   query,
   where,
+  limit,
+  writeBatch,
+  type DocumentReference,
 } from "firebase/firestore";
 import { firestore } from "./firebase";
+import { chunk } from "./selectors";
 import type { BusinessSettings, Customer, Product, ProductFamily, FamilyPricing, Invoice, Payment, PaymentAllocation, LedgerEntry, Expense, AuditLog, User } from "./types";
 
 export const COLLECTIONS = [
   "settings", "customers", "families", "pricing", "products", "invoices",
-  "payments", "allocations", "ledger", "expenses", "audit", "users",
+  "payments", "allocations", "ledger", "customerBalances", "expenses", "audit", "users",
 ] as const;
+
+export type CollectionName = (typeof COLLECTIONS)[number];
+
+export function docRef(name: string, id: string): DocumentReference {
+  return doc(firestore, name, id);
+}
+
+/**
+ * One canonical balance document per customer. Financial transactions read and
+ * write this document inside a Firestore transaction, so concurrent invoices
+ * and payments on the same customer conflict and retry instead of racing on a
+ * stale "latest ledger row" query (queries are not allowed in web transactions).
+ */
+export function balanceRef(customerId: string): DocumentReference {
+  return doc(firestore, "customerBalances", customerId);
+}
+
+export type WriteOp =
+  | { type: "set"; ref: DocumentReference; data: unknown }
+  | { type: "delete"; ref: DocumentReference };
+
+/**
+ * Commit many writes in the fewest possible round trips.
+ * Firestore allows 500 operations per batch; 450 leaves headroom.
+ */
+export async function commitWrites(ops: WriteOp[]): Promise<void> {
+  if (!ops.length) return;
+  for (const group of chunk(ops, 450)) {
+    const batch = writeBatch(firestore);
+    for (const op of group) {
+      if (op.type === "set") batch.set(op.ref, op.data as any);
+      else batch.delete(op.ref);
+    }
+    await batch.commit();
+  }
+}
+
+/** Cheap count: reads one aggregate instead of downloading every document. */
+export async function countDocs(name: string): Promise<number> {
+  const snap = await getCountFromServer(collection(firestore, name));
+  return snap.data().count;
+}
 
 class FirestoreTable<T> {
   constructor(public name: string, private idOf: (x: T) => string) {}
 
   async get(id: string): Promise<T | undefined> {
-    const snap = await getDoc(doc(firestore, this.name, id));
+    const snap = await getDoc(docRef(this.name, id));
     return snap.exists() ? (snap.data() as T) : undefined;
   }
 
   async put(x: T): Promise<void> {
-    await setDoc(doc(firestore, this.name, this.idOf(x)), x as any);
+    await setDoc(docRef(this.name, this.idOf(x)), x as any);
   }
 
   async delete(id: string): Promise<void> {
-    await deleteDoc(doc(firestore, this.name, id));
+    await deleteDoc(docRef(this.name, id));
   }
 
   async toArray(): Promise<T[]> {
@@ -38,8 +85,7 @@ class FirestoreTable<T> {
   }
 
   async count(): Promise<number> {
-    const snap = await getDocs(collection(firestore, this.name));
-    return snap.size;
+    return countDocs(this.name);
   }
 
   where(field: string) {
@@ -48,14 +94,12 @@ class FirestoreTable<T> {
       equals(val: any) {
         return {
           async toArray(): Promise<T[]> {
-            const q = query(collection(firestore, self.name), where(field, "==", val));
-            const snap = await getDocs(q);
+            const snap = await getDocs(query(collection(firestore, self.name), where(field, "==", val)));
             return snap.docs.map((d) => d.data() as T);
           },
           async first(): Promise<T | undefined> {
-            const q = query(collection(firestore, self.name), where(field, "==", val));
-            const snap = await getDocs(q);
-            return snap.docs.length ? (snap.docs[0].data() as T) : undefined;
+            const snap = await getDocs(query(collection(firestore, self.name), where(field, "==", val), limit(1)));
+            return snap.empty ? undefined : (snap.docs[0].data() as T);
           },
         };
       },
@@ -82,7 +126,8 @@ export const db = new AppDB();
 
 export async function clearAll() {
   for (const name of COLLECTIONS) {
+    if (name === "users") continue; // profiles are never managed from the browser
     const snap = await getDocs(collection(firestore, name));
-    for (const d of snap.docs) await deleteDoc(d.ref);
+    await commitWrites(snap.docs.map((d) => ({ type: "delete", ref: d.ref })));
   }
 }

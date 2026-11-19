@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort } from "../lib/money";
 import { appConfirm, toast } from "../lib/dialog";
-import type { ProductFamily } from "../lib/types";
+import type { Product, ProductFamily } from "../lib/types";
 
 export default function ProductFamilies() {
-  const { families, products, familyPricing, addFamily, updateFamily, deleteFamily, updateFamilyPricing } = useApp();
+  const { families, productsByFamily, familyPricing, addFamily, updateFamily, deleteFamily, updateFamilyPricing } = useApp();
   const [priceEditor, setPriceEditor] = useState<string | null>(null);
   const [priceForm, setPriceForm] = useState({ drum: "", gallon: "", quartar: "" });
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -17,7 +17,42 @@ export default function ProductFamilies() {
   const [desc, setDesc] = useState("");
   const [status, setStatus] = useState<"active" | "inactive">("active");
 
-  const shown = families.filter((f) => f.name.toLowerCase().includes(query.toLowerCase()));
+  const deferredQuery = useDeferredValue(query);
+
+  const familySearch = useMemo(
+    () => families.map((f) => ({ family: f, name: f.name.toLowerCase() })),
+    [families],
+  );
+  const shown = useMemo(() => {
+    const q = deferredQuery.toLowerCase();
+    return familySearch.filter((entry) => entry.name.includes(q)).map((entry) => entry.family);
+  }, [familySearch, deferredQuery]);
+
+  const familyCatalogue = useMemo(() => {
+    const catalogue = new Map<string, {
+      famProds: Product[];
+      codes: string[];
+      byCode: Map<string, { first: Product; bySize: Map<string, Product> }>;
+    }>();
+    for (const f of families) {
+      const famProds = productsByFamily(f.id);
+      const byCode = new Map<string, { first: Product; bySize: Map<string, Product> }>();
+      const codes: string[] = [];
+      for (const p of famProds) {
+        const code = p.colourCode;
+        if (!code) continue;
+        let entry = byCode.get(code);
+        if (!entry) {
+          entry = { first: p, bySize: new Map<string, Product>() };
+          byCode.set(code, entry);
+          codes.push(code);
+        }
+        if (!entry.bySize.has(p.size)) entry.bySize.set(p.size, p);
+      }
+      catalogue.set(f.id, { famProds, codes, byCode });
+    }
+    return catalogue;
+  }, [families, productsByFamily]);
 
   const openNew = () => { setEditing(null); setName(""); setDesc(""); setStatus("active"); setShowForm(true); };
   const openEdit = (f: ProductFamily) => { setEditing(f); setName(f.name); setDesc(f.description || ""); setStatus(f.status); setShowForm(true); };
@@ -58,7 +93,7 @@ export default function ProductFamilies() {
   };
 
   const remove = async (f: ProductFamily) => {
-    const count = products.filter((product) => product.familyId === f.id).length;
+    const count = productsByFamily(f.id).length;
     const extra = count
       ? `\n\nThis will permanently delete ${count} product(s) in this family, including their colour codes and prices.`
       : "";
@@ -105,8 +140,13 @@ export default function ProductFamilies() {
         <div style={{ padding: 8 }}>
           {shown.map((f) => {
             const fp = familyPricing(f.id);
-            const famProds = products.filter((p) => p.familyId === f.id);
-            const codes = [...new Set(famProds.map((p) => p.colourCode).filter(Boolean))];
+            const catalogue = familyCatalogue.get(f.id) || {
+              famProds: [] as Product[],
+              codes: [] as string[],
+              byCode: new Map<string, { first: Product; bySize: Map<string, Product> }>(),
+            };
+            const famProds = catalogue.famProds;
+            const codes = catalogue.codes;
             const isOpen = expanded === f.id;
             return (
               <div key={f.id} className="card" style={{ marginBottom: 10, padding: 12 }}>
@@ -146,11 +186,11 @@ export default function ProductFamilies() {
                         <thead><tr><th>Colour code</th><th>Drum</th><th>Gallon</th><th>Quartar</th><th>Status</th></tr></thead>
                         <tbody>
                           {codes.map((code) => {
-                            const variants = famProds.filter((p) => p.colourCode === code);
-                            const drum = variants.find((p) => p.size === "Drum");
-                            const gal = variants.find((p) => p.size === "Gallon");
-                            const q = variants.find((p) => p.size === "Quartar");
-                            return (<tr key={code}><td><b>{code}</b></td><td>{drum ? formatMoneyShort(drum.price) : "—"}</td><td>{gal ? formatMoneyShort(gal.price) : "—"}</td><td>{q ? formatMoneyShort(q.price) : "—"}</td><td>{variants[0]?.active ? "Active" : "Inactive"}</td></tr>);
+                            const entry = catalogue.byCode.get(code);
+                            const drum = entry?.bySize.get("Drum");
+                            const gal = entry?.bySize.get("Gallon");
+                            const q = entry?.bySize.get("Quartar");
+                            return (<tr key={code}><td><b>{code}</b></td><td>{drum ? formatMoneyShort(drum.price) : "—"}</td><td>{gal ? formatMoneyShort(gal.price) : "—"}</td><td>{q ? formatMoneyShort(q.price) : "—"}</td><td>{entry?.first.active ? "Active" : "Inactive"}</td></tr>);
                           })}
                           {codes.length === 0 && <tr><td colSpan={5} style={{ textAlign: "center", padding: 12 }}>No colour codes</td></tr>}
                         </tbody>

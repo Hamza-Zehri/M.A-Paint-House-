@@ -1,20 +1,41 @@
-import { useState, useEffect } from "react";
+import { lazy, Suspense, useState, useEffect } from "react";
 import { AppProvider, useApp } from "./store/AppContext";
 import { Icon } from "./components/Icon";
 import { login } from "./lib/auth";
+import { onIdle } from "./lib/asyncUtils";
+import { prefetchPdf } from "./lib/pdfLazy";
+import { mark } from "./lib/perf";
 import type { Invoice } from "./lib/types";
 import Dashboard from "./pages/Dashboard";
-import Customers from "./pages/Customers";
-import ProductFamilies from "./pages/ProductFamilies";
-import AllProducts from "./pages/AllProducts";
-import PriceManagement from "./pages/PriceManagement";
-import ImportProducts from "./pages/ImportProducts";
-import InvoiceBuilder from "./pages/Invoice";
-import InvoiceHistory from "./pages/InvoiceHistory";
-import Payments from "./pages/Payments";
-import Ledger from "./pages/Ledger";
-import Reports from "./pages/Reports";
-import Settings from "./pages/Settings";
+
+// The dashboard is the first page after login, so it stays in the entry chunk.
+// Everything else is loaded on demand and warmed on hover / idle.
+const Customers = lazy(() => import("./pages/Customers"));
+const ProductFamilies = lazy(() => import("./pages/ProductFamilies"));
+const AllProducts = lazy(() => import("./pages/AllProducts"));
+const PriceManagement = lazy(() => import("./pages/PriceManagement"));
+const ImportProducts = lazy(() => import("./pages/ImportProducts"));
+const InvoiceBuilder = lazy(() => import("./pages/Invoice"));
+const InvoiceHistory = lazy(() => import("./pages/InvoiceHistory"));
+const Payments = lazy(() => import("./pages/Payments"));
+const Ledger = lazy(() => import("./pages/Ledger"));
+const Reports = lazy(() => import("./pages/Reports"));
+const Settings = lazy(() => import("./pages/Settings"));
+
+const pageLoaders: Partial<Record<Page, () => Promise<unknown>>> = {
+  customers: () => import("./pages/Customers"),
+  families: () => import("./pages/ProductFamilies"),
+  allproducts: () => import("./pages/AllProducts"),
+  pricing: () => import("./pages/PriceManagement"),
+  import: () => import("./pages/ImportProducts"),
+  invoice: () => import("./pages/Invoice"),
+  history: () => import("./pages/InvoiceHistory"),
+  payments: () => import("./pages/Payments"),
+  ledger: () => import("./pages/Ledger"),
+  reports: () => import("./pages/Reports"),
+  settings: () => import("./pages/Settings"),
+};
+const prefetchPage = (next: Page) => { void pageLoaders[next]?.(); };
 
 type Page = "dashboard" | "customers" | "families" | "allproducts" | "pricing" | "import" | "invoice" | "history" | "payments" | "ledger" | "reports" | "settings";
 
@@ -242,9 +263,19 @@ function Shell() {
   const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
 
   useEffect(() => {
-    const t = setTimeout(() => setSplashDone(true), 950);
+    const t = setTimeout(() => setSplashDone(true), 180);
     return () => clearTimeout(t);
   }, []);
+
+  // Warm the most likely next screens when the browser is idle — never on the
+  // critical auth/initial-data path.
+  useEffect(() => {
+    if (!ready || !user) return;
+    onIdle(() => {
+      (["invoice", "history", "payments", "reports"] as Page[]).forEach(prefetchPage);
+      prefetchPdf();
+    });
+  }, [ready, user]);
 
   useEffect(() => {
     const onOnline = () => setOnline(true);
@@ -270,21 +301,22 @@ function Shell() {
   if (!user) return <LoginScreen />;
 
   const go = (next: Page) => {
-    if (next === "invoice") setEditingInvoice(null);
+    const started = mark(`nav.${next}`, "navigation");
     setPage(next);
     setMobileMenuOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
+    requestAnimationFrame(() => requestAnimationFrame(() => mark(`nav.${next}`, "navigation", started)));
   };
 
   const content = () => {
     switch (page) {
-      case "dashboard": return <Dashboard go={go} />;
+      case "dashboard": return <Dashboard go={(next) => { if (next === "invoice") setEditingInvoice(null); go(next); }} />;
       case "customers": return <Customers />;
       case "families": return <ProductFamilies />;
       case "allproducts": return <AllProducts />;
       case "pricing": return <PriceManagement />;
       case "import": return <ImportProducts onNavigate={(next) => go(next as Page)} />;
-      case "invoice": return <InvoiceBuilder initial={editingInvoice} onDone={() => { setEditingInvoice(null); go("history"); }} />;
+      case "invoice": return <InvoiceBuilder key={editingInvoice?.id || "new"} initial={editingInvoice} onDone={() => { setEditingInvoice(null); go("history"); }} />;
       case "history": return <InvoiceHistory onEdit={(inv) => { setEditingInvoice(inv); go("invoice"); }} />;
       case "payments": return <Payments />;
       case "ledger": return <Ledger />;
@@ -294,7 +326,7 @@ function Shell() {
   };
 
   return (
-    <div className={`app-shell ${mobileMenuOpen ? "drawer-open" : ""}`}>
+    <div className={`app-shell ${mobileMenuOpen ? "drawer-open" : ""} ${page === "invoice" ? "invoice-active" : ""}`}>
       {/* Mobile Drawer Backdrop */}
       <div
         className={`sidebar-backdrop ${mobileMenuOpen ? "active" : ""}`}
@@ -331,6 +363,8 @@ function Shell() {
             <button
               className={`${page === item.id ? "active" : ""} ${item.id === "invoice" ? "nav-invoice-btn" : ""}`}
               onClick={() => go(item.id)}
+              onMouseEnter={() => prefetchPage(item.id)}
+              onFocus={() => prefetchPage(item.id)}
               key={item.id}
             >
               <Icon name={item.icon} size={18} />
@@ -383,7 +417,9 @@ function Shell() {
           <div className="top-actions">
             <button
               className="btn top-new-invoice-vivid"
-              onClick={() => go("invoice")}
+              onClick={() => { setEditingInvoice(null); go("invoice"); }}
+              onMouseEnter={() => prefetchPage("invoice")}
+              onFocus={() => prefetchPage("invoice")}
               title="Create a new invoice"
             >
               <Icon name="plus" size={17} />
@@ -401,7 +437,19 @@ function Shell() {
         </header>
 
         <div className="main-content-area">
-          {content()}
+          <Suspense fallback={(
+            <div className="flex min-h-[360px] flex-col gap-3 p-6" aria-label="Loading page">
+              <div className="h-8 w-56 animate-pulse rounded-xl bg-slate-200/80" />
+              <div className="h-4 w-80 animate-pulse rounded-lg bg-slate-200/60" />
+              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="h-28 animate-pulse rounded-2xl bg-slate-200/60" />
+                <div className="h-28 animate-pulse rounded-2xl bg-slate-200/60" />
+                <div className="h-28 animate-pulse rounded-2xl bg-slate-200/60" />
+              </div>
+            </div>
+          )}>
+            {content()}
+          </Suspense>
         </div>
 
         <footer className="app-footer">

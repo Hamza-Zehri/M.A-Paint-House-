@@ -102,10 +102,15 @@ export interface Invoice {
   status: InvoiceStatus;
   createdAt: string;
   updatedAt: string;
+  /** Stable client-generated key so a retried save can never create a duplicate. */
+  idempotencyKey?: string;
+  /** Amount applied to this invoice inside transactions; avoids allocation races. */
+  paidAmount?: Money;
 }
 
 export interface Payment {
   id: string;
+  idempotencyKey?: string;
   receiptNumber: string;
   customerId: string;
   customerName: string;

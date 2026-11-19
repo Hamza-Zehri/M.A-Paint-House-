@@ -1,37 +1,47 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { mark } from "../lib/perf";
 
 /**
- * Lightweight, reusable guard against duplicate clicks / submissions.
- * Tracks a set of busy keys so individual buttons can be disabled
- * while their operation is running.
+ * Guards against duplicate clicks / submissions.
+ *
+ * The authoritative busy set lives in a ref so two clicks in the same tick can
+ * never both start an operation (the old state-based version could). React
+ * state is kept only to drive button disabled/loading visuals.
  */
 export function useActionLock() {
-  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const busyRef = useRef<Set<string>>(new Set());
+  const [busy, setBusy] = useState<Set<string>>(() => new Set());
 
-  const isBusy = useCallback((key: string) => busy.has(key), [busy]);
+  const isBusy = useCallback((key: string) => busy.has(key) || busyRef.current.has(key), [busy]);
 
-  const lock = useCallback(
-    async (key: string, action: () => Promise<void> | void) => {
-      if (busy.has(key)) return;
-      setBusy((prev) => {
-        const next = new Set(prev);
-        next.add(key);
-        return next;
-      });
-      try {
-        await action();
-      } finally {
-        setBusy((prev) => {
-          const next = new Set(prev);
-          next.delete(key);
-          return next;
-        });
-      }
-    },
-    [busy],
-  );
+  const lock = useCallback(async (key: string, action: () => Promise<void> | void) => {
+    if (busyRef.current.has(key)) return;
+    const started = mark(`action.${key}`, "ui");
+    busyRef.current.add(key);
+    setBusy(new Set(busyRef.current));
+    try {
+      await action();
+    } finally {
+      busyRef.current.delete(key);
+      setBusy(new Set(busyRef.current));
+      mark(`action.${key}`, "ui", started);
+    }
+  }, []);
 
-  const anyBusy = busy.size > 0;
+  /** Locked operation that also returns a value (e.g. a saved invoice). */
+  const lockResult = useCallback(async <T,>(key: string, action: () => Promise<T>): Promise<T | undefined> => {
+    if (busyRef.current.has(key)) return undefined;
+    const started = mark(`action.${key}`, "ui");
+    busyRef.current.add(key);
+    setBusy(new Set(busyRef.current));
+    try {
+      return await action();
+    } finally {
+      busyRef.current.delete(key);
+      setBusy(new Set(busyRef.current));
+      mark(`action.${key}`, "ui", started);
+    }
+  }, []);
 
-  return { isBusy, lock, anyBusy };
+  return { isBusy, lock, lockResult, anyBusy: busy.size > 0 };
 }

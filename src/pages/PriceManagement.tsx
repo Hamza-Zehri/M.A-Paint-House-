@@ -1,42 +1,76 @@
-import { useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
-import { formatMoneyShort } from "../lib/money";
 
 export default function PriceManagement() {
-  const { families, pricing, familyPricing, updateFamilyPricing, products } = useApp();
+  const { families, pricingByFamily, updateFamilyPricing, productsByFamily } = useApp();
   const [edits, setEdits] = useState<Record<string, { drum: string; gallon: string; quartar: string }>>({});
   const [search, setSearch] = useState("");
   const [confirm, setConfirm] = useState<{ familyId: string; name: string; affected: number } | null>(null);
   const [msg, setMsg] = useState("");
 
-  const getEdit = (famId: string) => {
-    if (edits[famId]) return edits[famId];
-    const fp = familyPricing(famId);
-    return { drum: String((fp?.drumPrice || 0) / 100), gallon: String((fp?.gallonPrice || 0) / 100), quartar: String((fp?.quartarPrice || 0) / 100) };
-  };
+  const deferredSearch = useDeferredValue(search);
 
-  const setEdit = (famId: string, field: string, value: string) => {
+  const defaultEdits = useMemo(() => {
+    const map = new Map<string, { drum: string; gallon: string; quartar: string }>();
+    for (const f of families) {
+      const fp = pricingByFamily.get(f.id);
+      map.set(f.id, {
+        drum: String((fp?.drumPrice || 0) / 100),
+        gallon: String((fp?.gallonPrice || 0) / 100),
+        quartar: String((fp?.quartarPrice || 0) / 100),
+      });
+    }
+    return map;
+  }, [families, pricingByFamily]);
+
+  const affectedByFamily = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const f of families) {
+      let count = 0;
+      for (const p of productsByFamily(f.id)) {
+        if (!p.override && (p.size === "Drum" || p.size === "Gallon" || p.size === "Quartar")) count++;
+      }
+      map.set(f.id, count);
+    }
+    return map;
+  }, [families, productsByFamily]);
+
+  const familySearch = useMemo(
+    () => families.map((f) => ({ family: f, name: f.name.toLowerCase() })),
+    [families],
+  );
+  const shown = useMemo(() => {
+    const q = deferredSearch.toLowerCase();
+    return familySearch.filter((entry) => entry.name.includes(q)).map((entry) => entry.family);
+  }, [familySearch, deferredSearch]);
+
+  const getEdit = useCallback((famId: string) =>
+    edits[famId] || defaultEdits.get(famId) || { drum: "0", gallon: "0", quartar: "0" },
+  [edits, defaultEdits]);
+
+  const setEdit = useCallback((famId: string, field: string, value: string) => {
     const cur = getEdit(famId);
-    setEdits({ ...edits, [famId]: { ...cur, [field]: value } });
-  };
+    setEdits((prev) => ({ ...prev, [famId]: { ...cur, [field]: value } }));
+  }, [getEdit]);
 
-  const countAffected = (familyId: string) => products.filter((p) => p.familyId === familyId && !p.override && (p.size === "Drum" || p.size === "Gallon" || p.size === "Quartar")).length;
+  const countAffected = useCallback(
+    (familyId: string) => affectedByFamily.get(familyId) || 0,
+    [affectedByFamily],
+  );
 
-  const requestSave = (familyId: string, name: string) => {
+  const requestSave = useCallback((familyId: string, name: string) => {
     setConfirm({ familyId, name, affected: countAffected(familyId) });
-  };
+  }, [countAffected]);
 
-  const doSave = async () => {
+  const doSave = useCallback(async () => {
     if (!confirm) return;
     const e = getEdit(confirm.familyId);
     await updateFamilyPricing(confirm.familyId, parseFloat(e.drum) || 0, parseFloat(e.gallon) || 0, parseFloat(e.quartar) || 0);
     setMsg(`Updated ${confirm.name}. ${confirm.affected} products affected.`);
     setConfirm(null);
     setTimeout(() => setMsg(""), 3000);
-  };
-
-  const shown = families.filter((f) => f.name.toLowerCase().includes(search.toLowerCase()));
+  }, [confirm, getEdit, updateFamilyPricing]);
 
   return (
     <div className="page">

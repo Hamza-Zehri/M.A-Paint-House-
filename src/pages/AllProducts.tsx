@@ -1,14 +1,15 @@
-import { useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort, toPaisa } from "../lib/money";
 import { appConfirm, toast } from "../lib/dialog";
+import { buildProductSearchIndex, matchProduct } from "../lib/selectors";
 import type { Product, Size } from "../lib/types";
 
 const SIZES: Size[] = ["Drum", "Gallon", "Quartar", "Other"];
 
 export default function AllProducts() {
-  const { products, families, toggleProduct, addProduct, updateProduct, deleteProduct } = useApp();
+  const { products, families, familyById, toggleProduct, addProduct, updateProduct, deleteProduct } = useApp();
   const [query, setQuery] = useState("");
   const [familyFilter, setFamilyFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -22,6 +23,31 @@ export default function AllProducts() {
   });
   const [form, setForm] = useState(blank());
 
+  const deferredQuery = useDeferredValue(query);
+
+  const familyNameById = useMemo(
+    () => new Map(families.map((f) => [f.id, f.name] as [string, string])),
+    [families],
+  );
+  const searchIndex = useMemo(
+    () => buildProductSearchIndex(products, familyNameById),
+    [products, familyNameById],
+  );
+  const categories = useMemo(
+    () => [...new Set(products.map((product) => product.category).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [products],
+  );
+  const shown = useMemo(() => {
+    const familyId = familyFilter === "all" ? null : familyFilter;
+    return searchIndex
+      .filter((entry) =>
+        matchProduct(entry, deferredQuery, familyId) &&
+        (categoryFilter === "all" || entry.product.category === categoryFilter) &&
+        (sizeFilter === "all" || entry.product.size === sizeFilter),
+      )
+      .map((entry) => entry.product);
+  }, [searchIndex, deferredQuery, familyFilter, categoryFilter, sizeFilter]);
+
   const openNew = () => { setEditing(null); setForm(blank()); setShowForm(true); };
   const openEdit = (p: Product) => {
     setEditing(p);
@@ -32,7 +58,7 @@ export default function AllProducts() {
   const save = async () => {
     if (!form.name.trim()) { toast("Product name is required.", "error"); return; }
     if (!form.familyId) { toast("Select a product family.", "error"); return; }
-    const fam = families.find((f) => f.id === form.familyId);
+    const fam = familyById.get(form.familyId);
     const data = {
       name: form.name.trim(), colourCode: form.colourCode.trim(), familyId: form.familyId,
       size: form.size, price: toPaisa(parseFloat(form.price) || 0), override: form.override,
@@ -64,17 +90,6 @@ export default function AllProducts() {
       toast(e?.message || "Could not delete product.", "error");
     }
   };
-
-  const categories = [...new Set(products.map((product) => product.category).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-
-  const shown = products.filter((p) => {
-    if (familyFilter !== "all" && p.familyId !== familyFilter) return false;
-    if (categoryFilter !== "all" && p.category !== categoryFilter) return false;
-    if (sizeFilter !== "all" && p.size !== sizeFilter) return false;
-    const fam = families.find((f) => f.id === p.familyId);
-    const hay = `${p.name} ${p.colourCode} ${fam?.name || ""} ${p.category} ${p.code}`.toLowerCase();
-    return hay.includes(query.toLowerCase());
-  });
 
   return (
     <div className="page">
@@ -133,7 +148,7 @@ export default function AllProducts() {
             <thead><tr><th>Product</th><th>Family</th><th>Category</th><th>Colour code</th><th>Size</th><th>Price</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {shown.map((p) => {
-                const fam = families.find((f) => f.id === p.familyId);
+                const fam = familyById.get(p.familyId);
                 return (
                   <tr key={p.id}>
                     <td><b>{p.name}</b></td>

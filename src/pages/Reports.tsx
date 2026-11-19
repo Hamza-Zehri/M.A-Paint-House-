@@ -1,49 +1,70 @@
-import { useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort, formatMoney } from "../lib/money";
-import { reportPdfBlob, reportPdfName } from "../lib/pdfFile";
+import { reportPdfBlob, reportPdfName } from "../lib/pdfLazy";
 import { sharePdf } from "../lib/share";
 import { toast } from "../lib/dialog";
 
 export default function Reports() {
-  const { invoices, payments, settings, customers, customerBalance } = useApp();
+  const { invoices, payments, settings, customers, balancesByCustomer } = useApp();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [monthFilter, setMonthFilter] = useState("all");
 
+  // Keep the filter controls responsive; the report aggregates at lower priority.
+  const deferredFrom = useDeferredValue(from);
+  const deferredTo = useDeferredValue(to);
+  const deferredMonthFilter = useDeferredValue(monthFilter);
+
   const daily = useMemo(() => {
     const map: Record<string, { date: string; count: number; gross: number; discount: number; net: number; payments: number }> = {};
-    for (const inv of invoices.filter((i) => i.status === "finalized")) {
-      if (monthFilter !== "all") {
-        if (!(inv.date || "").startsWith(monthFilter)) continue;
+    for (const inv of invoices) {
+      if (inv.status !== "finalized") continue;
+      if (deferredMonthFilter !== "all") {
+        if (!(inv.date || "").startsWith(deferredMonthFilter)) continue;
       } else {
-        if (from && inv.date < from) continue;
-        if (to && inv.date > to) continue;
+        if (deferredFrom && inv.date < deferredFrom) continue;
+        if (deferredTo && inv.date > deferredTo) continue;
       }
       if (!map[inv.date]) map[inv.date] = { date: inv.date, count: 0, gross: 0, discount: 0, net: 0, payments: 0 };
       const d = map[inv.date];
       d.count += 1; d.gross += inv.subtotal; d.discount += inv.discountAmount; d.net += inv.netPayable;
     }
     for (const p of payments) {
-      if (monthFilter !== "all") {
-        if (!(p.date || "").startsWith(monthFilter)) continue;
+      if (deferredMonthFilter !== "all") {
+        if (!(p.date || "").startsWith(deferredMonthFilter)) continue;
       } else {
-        if (from && p.date < from) continue;
-        if (to && p.date > to) continue;
+        if (deferredFrom && p.date < deferredFrom) continue;
+        if (deferredTo && p.date > deferredTo) continue;
       }
       if (!map[p.date]) map[p.date] = { date: p.date, count: 0, gross: 0, discount: 0, net: 0, payments: 0 };
       map[p.date].payments += p.amount;
     }
     return Object.values(map).sort((a, b) => b.date.localeCompare(a.date));
-  }, [invoices, payments, from, to, monthFilter]);
+  }, [invoices, payments, deferredFrom, deferredTo, deferredMonthFilter]);
 
-  const totals = daily.reduce((acc, d) => ({ count: acc.count + d.count, gross: acc.gross + d.gross, discount: acc.discount + d.discount, net: acc.net + d.net, payments: acc.payments + d.payments }), { count: 0, gross: 0, discount: 0, net: 0, payments: 0 });
+  const totals = useMemo(
+    () => daily.reduce((acc, d) => ({ count: acc.count + d.count, gross: acc.gross + d.gross, discount: acc.discount + d.discount, net: acc.net + d.net, payments: acc.payments + d.payments }), { count: 0, gross: 0, discount: 0, net: 0, payments: 0 }),
+    [daily],
+  );
 
-  const outstandingRows = customers.map((c) => ({ name: c.name, balance: customerBalance(c.id) })).filter((r) => r.balance !== 0);
-  const monthOptions = Array.from(new Set([...invoices.map((i) => i.date || ""), ...payments.map((p) => p.date || "")].map((d) => d.slice(0, 7)))).filter(Boolean).sort().reverse();
+  const outstandingRows = useMemo(() => {
+    const rows: { name: string; balance: number }[] = [];
+    for (const c of customers) {
+      // O(1) index lookup — identical to customerBalance(c.id).
+      const balance = balancesByCustomer.get(c.id) || 0;
+      if (balance !== 0) rows.push({ name: c.name, balance });
+    }
+    return rows;
+  }, [customers, balancesByCustomer]);
 
-  const shareDailyReport = async () => {
+  const monthOptions = useMemo(
+    () => Array.from(new Set([...invoices.map((i) => i.date || ""), ...payments.map((p) => p.date || "")].map((d) => d.slice(0, 7)))).filter(Boolean).sort().reverse(),
+    [invoices, payments],
+  );
+
+  const shareDailyReport = useCallback(async () => {
     const rows = daily.map((d) => [
       d.date,
       d.count,
@@ -54,7 +75,7 @@ export default function Reports() {
       formatMoney(d.net - d.payments),
     ]);
     try {
-      const blob = reportPdfBlob(
+      const blob = await reportPdfBlob(
         "Daily Sales Report",
         ["Date", "Invoices", "Gross", "Discount", "Net", "Payments", "Balance"],
         rows,
@@ -72,12 +93,12 @@ export default function Reports() {
     } catch (error: any) {
       toast(error?.message || "Could not create the report PDF.", "error");
     }
-  };
+  }, [daily, totals, settings, monthFilter, from, to]);
 
-  const shareOutstandingReport = async () => {
+  const shareOutstandingReport = useCallback(async () => {
     const rows = outstandingRows.map((row) => [row.name, formatMoney(row.balance)]);
     try {
-      const blob = reportPdfBlob(
+      const blob = await reportPdfBlob(
         "Customer Outstanding Report",
         ["Customer", "Outstanding balance"],
         rows,
@@ -95,7 +116,7 @@ export default function Reports() {
     } catch (error: any) {
       toast(error?.message || "Could not create the report PDF.", "error");
     }
-  };
+  }, [outstandingRows, settings]);
 
   return (
     <div className="page">

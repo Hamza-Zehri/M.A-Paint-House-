@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort, toPaisa } from "../lib/money";
@@ -6,12 +6,40 @@ import { appConfirm, toast } from "../lib/dialog";
 import type { Customer } from "../lib/types";
 
 export default function Customers() {
-  const { customers, addCustomer, updateCustomer, deleteCustomer, customerBalance, invoices, payments } = useApp();
+  const { customers, addCustomer, updateCustomer, deleteCustomer, customerBalance, invoicesByCustomer, paymentsByCustomer } = useApp();
   const [query, setQuery] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Customer | null>(null);
   const [viewing, setViewing] = useState<Customer | null>(null);
   const [form, setForm] = useState({ name: "", phone: "", whatsapp: "", address: "", city: "", openingBalance: "", discount: "0", notes: "", active: true });
+
+  const deferredQuery = useDeferredValue(query);
+
+  const customerSearch = useMemo(
+    () => customers.map((c) => ({ customer: c, name: c.name.toLowerCase(), phone: c.phone })),
+    [customers],
+  );
+  const shown = useMemo(() => {
+    const q = deferredQuery.toLowerCase();
+    return customerSearch
+      .filter((entry) => entry.name.includes(q) || entry.phone.includes(deferredQuery))
+      .map((entry) => entry.customer);
+  }, [customerSearch, deferredQuery]);
+
+  const viewingId = viewing?.id ?? null;
+  const custInvoices = useMemo(
+    () => (viewingId ? invoicesByCustomer.get(viewingId) || [] : []),
+    [viewingId, invoicesByCustomer],
+  );
+  const custPayments = useMemo(
+    () => (viewingId ? paymentsByCustomer.get(viewingId) || [] : []),
+    [viewingId, paymentsByCustomer],
+  );
+  const viewingTotals = useMemo(() => ({
+    totalInvoiced: custInvoices.reduce((s, i) => s + i.netPayable, 0),
+    totalDiscount: custInvoices.reduce((s, i) => s + i.discountAmount, 0),
+    totalPaid: custPayments.reduce((s, p) => s + p.amount, 0),
+  }), [custInvoices, custPayments]);
 
   const resetForm = () => setForm({ name: "", phone: "", whatsapp: "", address: "", city: "", openingBalance: "", discount: "0", notes: "", active: true });
 
@@ -34,8 +62,8 @@ export default function Customers() {
   };
 
   const remove = async (c: Customer) => {
-    const invoiceCount = invoices.filter((invoice) => invoice.customerId === c.id).length;
-    const paymentCount = payments.filter((payment) => payment.customerId === c.id).length;
+    const invoiceCount = (invoicesByCustomer.get(c.id) || []).length;
+    const paymentCount = (paymentsByCustomer.get(c.id) || []).length;
     const related = invoiceCount || paymentCount
       ? `\n\nThis will also permanently delete ${invoiceCount} invoice(s), ${paymentCount} payment(s) and all ledger entries for this customer.`
       : "\n\nThis will remove the customer and their ledger entries.";
@@ -53,15 +81,9 @@ export default function Customers() {
     }
   };
 
-  const shown = customers.filter((c) => c.name.toLowerCase().includes(query.toLowerCase()) || c.phone.includes(query));
-
   if (viewing) {
     const c = viewing;
-    const custInvoices = invoices.filter((i) => i.customerId === c.id);
-    const custPayments = payments.filter((p) => p.customerId === c.id);
-    const totalInvoiced = custInvoices.reduce((s, i) => s + i.netPayable, 0);
-    const totalDiscount = custInvoices.reduce((s, i) => s + i.discountAmount, 0);
-    const totalPaid = custPayments.reduce((s, p) => s + p.amount, 0);
+    const { totalInvoiced, totalDiscount, totalPaid } = viewingTotals;
     const bal = customerBalance(c.id);
     return (
       <div className="page">
@@ -118,22 +140,25 @@ export default function Customers() {
           <table className="large-table">
             <thead><tr><th>Name</th><th>Phone</th><th>City</th><th>Opening Bal.</th><th>Discount</th><th>Balance</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {shown.map((c) => (
-                <tr key={c.id}>
-                  <td><b>{c.name}</b></td>
-                  <td>{c.phone}</td>
-                  <td>{c.city}</td>
-                  <td className={c.openingBalance > 0 ? "red-text" : ""}>{formatMoneyShort(c.openingBalance)}</td>
-                  <td>{c.discount}%</td>
-                  <td className={customerBalance(c.id) > 0 ? "red-text" : ""}>{formatMoneyShort(customerBalance(c.id))}</td>
-                  <td>{c.active ? "Active" : "Inactive"}</td>
-                  <td><div className="row-actions">
-                    <button onClick={() => setViewing(c)} title="View"><Icon name="arrow" size={16} /></button>
-                    <button onClick={() => openEdit(c)} title="Edit"><Icon name="edit" size={16} /></button>
-                    <button onClick={() => remove(c)} title="Delete customer"><Icon name="trash" size={16} /></button>
-                  </div></td>
-                </tr>
-              ))}
+              {shown.map((c) => {
+                const balance = customerBalance(c.id);
+                return (
+                  <tr key={c.id}>
+                    <td><b>{c.name}</b></td>
+                    <td>{c.phone}</td>
+                    <td>{c.city}</td>
+                    <td className={c.openingBalance > 0 ? "red-text" : ""}>{formatMoneyShort(c.openingBalance)}</td>
+                    <td>{c.discount}%</td>
+                    <td className={balance > 0 ? "red-text" : ""}>{formatMoneyShort(balance)}</td>
+                    <td>{c.active ? "Active" : "Inactive"}</td>
+                    <td><div className="row-actions">
+                      <button onClick={() => setViewing(c)} title="View"><Icon name="arrow" size={16} /></button>
+                      <button onClick={() => openEdit(c)} title="Edit"><Icon name="edit" size={16} /></button>
+                      <button onClick={() => remove(c)} title="Delete customer"><Icon name="trash" size={16} /></button>
+                    </div></td>
+                  </tr>
+                );
+              })}
               {shown.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", padding: 20 }}>No customers</td></tr>}
             </tbody>
           </table>

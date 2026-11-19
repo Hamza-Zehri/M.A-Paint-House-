@@ -1,28 +1,56 @@
-import { useState } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort, toPaisa, todayLocalISO } from "../lib/money";
-import { receiptPdfBlob, receiptPdfName } from "../lib/pdfFile";
+import { receiptPdfBlob, receiptPdfName } from "../lib/pdfLazy";
 import { sharePdf } from "../lib/share";
 import { appConfirm, toast } from "../lib/dialog";
 import { useActionLock } from "../hooks/useActionLock";
 import type { Payment } from "../lib/types";
 
 const METHODS = ["Cash", "Bank transfer", "JazzCash", "EasyPaisa", "Cheque", "Other"];
+const DRAFT_KEY = "maph_payment_draft_v1";
 
 export default function Payments() {
-  const { customers, payments, recordPayment, updatePayment, deletePayment, customerBalance, settings } = useApp();
+  const { customers, payments, recordPayment, updatePayment, deletePayment, settings, customerById, balancesByCustomer } = useApp();
   const [customerId, setCustomerId] = useState(customers[0]?.id || "");
   const [date, setDate] = useState(todayLocalISO());
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("Cash");
   const [reference, setReference] = useState("");
   const [notes, setNotes] = useState("");
-  const [receiptNumber] = useState(`RCPT-${Date.now().toString().slice(-6)}`);
+  const [receiptNumber, setReceiptNumber] = useState(`RCPT-${Date.now().toString().slice(-6)}`);
   const [editing, setEditing] = useState<Payment | null>(null);
   const [editForm, setEditForm] = useState({ date: "", method: "Cash", reference: "", notes: "" });
   const [monthFilter, setMonthFilter] = useState("all");
+  const [visibleCount, setVisibleCount] = useState(100);
+  const [draftLoaded, setDraftLoaded] = useState(false);
   const { isBusy, lock } = useActionLock();
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (d) {
+          if (d.customerId) setCustomerId(d.customerId);
+          if (d.date) setDate(d.date);
+          if (d.amount) setAmount(d.amount);
+          if (d.method) setMethod(d.method);
+          if (d.reference) setReference(d.reference);
+          if (d.notes) setNotes(d.notes);
+        }
+      }
+    } catch { /* ignore a corrupt draft */ }
+    setDraftLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!draftLoaded) return;
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ customerId, date, amount, method, reference, notes }));
+    } catch { /* storage can be unavailable */ }
+  }, [draftLoaded, customerId, date, amount, method, reference, notes]);
 
   const startEdit = (p: Payment) => {
     setEditing(p);
@@ -41,9 +69,9 @@ export default function Payments() {
   };
 
   const shareReceipt = async (payment: Payment) => {
-    const owner = customers.find((item) => item.id === payment.customerId);
+    const owner = customerById.get(payment.customerId);
     try {
-      const blob = receiptPdfBlob(payment, settings, owner);
+      const blob = await receiptPdfBlob(payment, settings, owner);
       const result = await sharePdf({
         blob,
         filename: receiptPdfName(payment),
@@ -71,20 +99,34 @@ export default function Payments() {
     }
   };
 
-  const customer = customers.find((c) => c.id === customerId);
-  const bal = customer ? customerBalance(customer.id) : 0;
+  const customer = customerById.get(customerId);
+  const bal = customer ? (balancesByCustomer.get(customer.id) || 0) : 0;
   const payPaisa = toPaisa(parseFloat(amount) || 0);
   const after = bal - payPaisa;
-  const monthOptions = Array.from(new Set(payments.map((p) => (p.date || "").slice(0, 7)))).filter(Boolean).sort().reverse();
-  const shownPayments = monthFilter === "all" ? payments : payments.filter((p) => (p.date || "").startsWith(monthFilter));
+  const activeCustomers = useMemo(() => customers.filter((c) => c.active), [customers]);
+  const monthOptions = useMemo(
+    () => Array.from(new Set(payments.map((p) => (p.date || "").slice(0, 7)))).filter(Boolean).sort().reverse(),
+    [payments],
+  );
+  const shownPayments = useMemo(() => {
+    const filtered = monthFilter === "all" ? payments : payments.filter((p) => (p.date || "").startsWith(monthFilter));
+    return [...filtered].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  }, [payments, monthFilter]);
+  const totalReceived = useMemo(() => shownPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0), [shownPayments]);
+  useEffect(() => setVisibleCount(100), [monthFilter]);
 
   const handleSave = async () => {
     if (!customerId) { toast("Select a customer.", "error"); return; }
     if (!amount || parseFloat(amount) <= 0) { toast("Enter a payment amount.", "error"); return; }
     try {
-      const pay = await recordPayment({ customerId, date, amount: parseFloat(amount), method, reference, notes });
+      const pay = await recordPayment({
+        customerId, date, amount: parseFloat(amount), method, reference, notes,
+        idempotencyKey: `pay-${receiptNumber}`,
+      });
       toast(`Payment ${pay.receiptNumber} recorded.`, "success");
       setAmount(""); setReference(""); setNotes("");
+      try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
+      setReceiptNumber(`RCPT-${Date.now().toString().slice(-6)}`);
     } catch (e: any) { toast(e?.message || "Could not record payment.", "error"); }
   };
 
@@ -96,7 +138,7 @@ export default function Payments() {
         <label>Customer
           <select className="field" value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
             <option value="">Select customer...</option>
-            {customers.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {activeCustomers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </label>
         <label>Payment date<div className="input-box"><Icon name="calendar" size={17} /><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></label>
@@ -138,8 +180,8 @@ export default function Payments() {
             </div>
           </div>
         )}
-        <div className="payment-total"><div><small>Total received</small><b>{formatMoneyShort(shownPayments.reduce((s, p) => s + p.amount, 0))}</b></div></div>
-        {[...shownPayments].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((x) => (
+        <div className="payment-total"><div><small>Total received</small><b>{formatMoneyShort(totalReceived)}</b></div></div>
+        {shownPayments.slice(0, visibleCount).map((x) => (
           <div className="payment-row" key={x.id}>
             <span className="receipt-icon"><Icon name="check" size={16} /></span>
             <div><b>{x.receiptNumber}</b><small>{x.customerName} • {x.date} • {x.method}</small></div>
@@ -149,6 +191,11 @@ export default function Payments() {
             <button className="table-action" disabled={isBusy(`delete-${x.id}`)} onClick={() => lock(`delete-${x.id}`, () => removePayment(x))} title="Delete payment"><Icon name="trash" size={16} /></button>
           </div>
         ))}
+        {shownPayments.length > visibleCount && (
+          <button className="btn btn-secondary" style={{ margin: 12 }} onClick={() => setVisibleCount((n) => n + 100)}>
+            Show more payments ({shownPayments.length - visibleCount} remaining)
+          </button>
+        )}
         {shownPayments.length === 0 && <p style={{ padding: 12, color: "var(--muted)" }}>No payments yet</p>}
       </section>
     </div>

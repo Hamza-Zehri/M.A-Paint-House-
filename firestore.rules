@@ -1,11 +1,13 @@
 rules_version = '2';
 
-// M.A Paint House — Firestore security rules
+// M.A Paint House — Firestore security rules.
 //
 // Every business collection requires a signed-in Firebase Authentication
 // account. The legacy bootstrap account (admin@mapainthouse.app) is blocked at
-// the database layer as well as in the app, so its old credentials cannot read
-// or write any shop data even if someone bypasses the login screen.
+// the database layer as well as in the app. Financial documents additionally
+// get conservative server-side shape validation so a buggy client cannot save
+// a malformed invoice, payment or ledger row.
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -15,12 +17,34 @@ service cloud.firestore {
         && request.auth.token.email.lower() != 'admin@mapainthouse.app';
     }
 
+    function hasKeys(keys) {
+      return request.resource.data.keys().hasAll(keys);
+    }
+
+    function isMoney(value) {
+      return value is int || value is float;
+    }
+
+    function sameIdempotencyKey() {
+      return request.resource.data.get('idempotencyKey', null)
+        == resource.data.get('idempotencyKey', null);
+    }
+
     match /settings/{docId} {
-      allow read, write: if isTrustedUser();
+      allow read: if isTrustedUser();
+      allow write: if isTrustedUser()
+        && hasKeys(['id', 'name', 'address', 'phone', 'invoicePrefix', 'invoiceCounter', 'paymentMethods'])
+        && request.resource.data.invoiceCounter is int
+        && request.resource.data.paymentMethods is list;
     }
 
     match /customers/{id} {
-      allow read, write: if isTrustedUser();
+      allow read: if isTrustedUser();
+      allow write: if isTrustedUser()
+        && hasKeys(['id', 'name', 'phone', 'address', 'openingBalance', 'discount', 'active'])
+        && isMoney(request.resource.data.openingBalance)
+        && isMoney(request.resource.data.discount)
+        && request.resource.data.active is bool;
     }
 
     match /families/{id} {
@@ -28,7 +52,9 @@ service cloud.firestore {
     }
 
     match /pricing/{id} {
-      allow read, write: if isTrustedUser();
+      allow read: if isTrustedUser();
+      allow write: if isTrustedUser()
+        && hasKeys(['familyId', 'drumPrice', 'gallonPrice', 'quartarPrice', 'updatedAt']);
     }
 
     match /products/{id} {
@@ -36,28 +62,69 @@ service cloud.firestore {
     }
 
     match /invoices/{id} {
-      allow read, write: if isTrustedUser();
+      allow read: if isTrustedUser();
+      allow create: if isTrustedUser()
+        && hasKeys(['id', 'number', 'customerId', 'date', 'items', 'subtotal', 'discountPercent', 'discountAmount', 'netPayable', 'paymentReceived', 'balanceDue', 'status', 'createdAt', 'updatedAt'])
+        && request.resource.data.items is list
+        && isMoney(request.resource.data.netPayable)
+        && isMoney(request.resource.data.paymentReceived)
+        && isMoney(request.resource.data.balanceDue)
+        && (request.resource.data.status == 'draft'
+          || request.resource.data.status == 'finalized'
+          || request.resource.data.status == 'cancelled'
+          || request.resource.data.status == 'void');
+      allow update: if isTrustedUser()
+        && (request.resource.data.status == 'draft'
+          || request.resource.data.status == 'finalized'
+          || request.resource.data.status == 'cancelled'
+          || request.resource.data.status == 'void')
+        && sameIdempotencyKey();
+      allow delete: if isTrustedUser();
     }
 
     match /payments/{id} {
-      allow read, write: if isTrustedUser();
+      allow read: if isTrustedUser();
+      allow create: if isTrustedUser()
+        && hasKeys(['id', 'receiptNumber', 'customerId', 'date', 'amount', 'method', 'createdAt'])
+        && isMoney(request.resource.data.amount)
+        && request.resource.data.amount >= 0;
+      allow update: if isTrustedUser() && sameIdempotencyKey();
+      allow delete: if isTrustedUser();
     }
 
     match /allocations/{id} {
-      allow read, write: if isTrustedUser();
+      allow read: if isTrustedUser();
+      allow write: if isTrustedUser()
+        && hasKeys(['id', 'paymentId', 'invoiceId', 'amount', 'createdAt'])
+        && isMoney(request.resource.data.amount)
+        && request.resource.data.amount >= 0;
     }
 
     match /ledger/{id} {
-      allow read, write: if isTrustedUser();
+      allow read: if isTrustedUser();
+      allow write: if isTrustedUser()
+        && hasKeys(['id', 'customerId', 'date', 'type', 'debit', 'credit', 'balance', 'createdAt'])
+        && isMoney(request.resource.data.debit)
+        && isMoney(request.resource.data.credit)
+        && isMoney(request.resource.data.balance);
+    }
+
+    // Canonical balance row written atomically with invoices and payments.
+    match /customerBalances/{id} {
+      allow read: if isTrustedUser();
+      allow write: if isTrustedUser()
+        && hasKeys(['amount', 'updatedAt'])
+        && isMoney(request.resource.data.amount);
     }
 
     match /expenses/{id} {
       allow read, write: if isTrustedUser();
     }
 
+    // Audit history is append-only for normal users.
     match /audit/{id} {
-      allow read, create, delete: if isTrustedUser();
-      allow update: if false;
+      allow read, create: if isTrustedUser();
+      allow update, delete: if false;
     }
 
     // Profiles are managed in the Firebase Console, never by the browser.

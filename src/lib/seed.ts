@@ -1,4 +1,4 @@
-import { db } from "./db";
+import { db, commitWrites, docRef } from "./db";
 import { toPaisa } from "./money";
 import type { BusinessSettings } from "./types";
 
@@ -27,6 +27,7 @@ export async function cleanupLegacySeededData() {
     for (const entry of entries) {
       await db.ledger.delete(entry.id);
     }
+    await commitWrites([{ type: "delete", ref: docRef("customerBalances", "cust-bashir-kalat") }]);
   } catch (e) {
     console.error("Cleanup legacy data error:", e);
   }

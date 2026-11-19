@@ -1,8 +1,21 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { db } from "../lib/db";
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from "react";
+import { runTransaction, type Transaction } from "firebase/firestore";
+import { db, docRef, balanceRef, commitWrites, type WriteOp } from "../lib/db";
+import { firestore } from "../lib/firebase";
 import { seedIfEmpty, cleanupLegacySeededData } from "../lib/seed";
 import { toPaisa, uid, percentOf } from "../lib/money";
 import { currentUser, logout as doLogout, waitForAuth, isDefaultAdminEmail } from "../lib/auth";
+import { measured } from "../lib/perf";
+import { withTimeout, retry } from "../lib/asyncUtils";
+import {
+  idempotentId,
+  indexById,
+  indexBy,
+  latestBalancesByCustomer,
+  paidByInvoice,
+  recalculateLedgerBalances,
+  sumBy,
+} from "../lib/selectors";
 import type { BusinessSettings, Customer, Product, ProductFamily, FamilyPricing, Invoice, InvoiceItem, Payment, PaymentAllocation, LedgerEntry, Expense, User, AuditLog } from "../lib/types";
 
 interface Ctx {
@@ -19,14 +32,22 @@ interface Ctx {
   ledger: LedgerEntry[];
   expenses: Expense[];
   audit: AuditLog[];
+  /** Pre-built indexes — O(1) lookups instead of repeated array scans. */
+  customerById: ReadonlyMap<string, Customer>;
+  productById: ReadonlyMap<string, Product>;
+  familyById: ReadonlyMap<string, ProductFamily>;
+  pricingByFamily: ReadonlyMap<string, FamilyPricing>;
+  ledgerByCustomer: ReadonlyMap<string, LedgerEntry[]>;
+  balancesByCustomer: ReadonlyMap<string, number>;
+  paidByInvoiceMap: ReadonlyMap<string, number>;
+  invoicesByCustomer: ReadonlyMap<string, Invoice[]>;
+  paymentsByCustomer: ReadonlyMap<string, Payment[]>;
   refresh: () => Promise<void>;
   setUser: (u: User | null) => void;
   doLogout: () => void;
-  // customers
   addCustomer: (c: Omit<Customer, "id" | "createdAt">) => Promise<Customer>;
   updateCustomer: (c: Customer) => Promise<void>;
   deleteCustomer: (id: string) => Promise<void>;
-  // products/families
   addFamily: (name: string, description?: string) => Promise<ProductFamily>;
   updateFamily: (f: ProductFamily) => Promise<void>;
   deleteFamily: (id: string) => Promise<void>;
@@ -36,34 +57,23 @@ interface Ctx {
   deleteProduct: (id: string) => Promise<void>;
   toggleProduct: (id: string) => Promise<void>;
   importProducts: (rows: any[]) => Promise<{
-    imported: number;
-    families: number;
-    duplicates: number;
-    missing: number;
-    review: number;
-    pricesUpdated: number;
-    totalRows: number;
+    imported: number; families: number; duplicates: number; missing: number;
+    review: number; pricesUpdated: number; totalRows: number;
   }>;
-  // invoices
-  createInvoice: (input: { customerId: string; date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; paymentReceived?: number; notes?: string; status?: "draft" | "finalized"; bonus?: boolean }) => Promise<Invoice>;
+  createInvoice: (input: { customerId: string; date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; paymentReceived?: number; notes?: string; status?: "draft" | "finalized"; bonus?: boolean; idempotencyKey?: string }) => Promise<Invoice>;
   updateInvoice: (inv: Invoice) => Promise<void>;
   editInvoice: (id: string, input: { date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; notes?: string; bonus?: boolean }) => Promise<Invoice>;
   cancelInvoice: (id: string) => Promise<void>;
   deleteInvoice: (id: string) => Promise<void>;
-  // payments
-  recordPayment: (input: { customerId: string; date: string; amount: number; method: string; reference?: string; notes?: string; allocations?: { invoiceId: string; amount: number }[] }) => Promise<Payment>;
+  recordPayment: (input: { customerId: string; date: string; amount: number; method: string; reference?: string; notes?: string; allocations?: { invoiceId: string; amount: number }[]; idempotencyKey?: string }) => Promise<Payment>;
   updatePayment: (p: Payment) => Promise<void>;
   reversePayment: (id: string) => Promise<void>;
   deletePayment: (id: string) => Promise<void>;
-  // expenses
   addExpense: (e: Omit<Expense, "id" | "createdAt">) => Promise<void>;
   updateExpense: (e: Expense) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
-  // settings
   updateSettings: (s: BusinessSettings) => Promise<void>;
-  // audit
   log: (action: string, entity: string, entityId: string, details: string) => Promise<void>;
-  // helpers
   customerBalance: (customerId: string) => number;
   invoiceBalance: (invoiceId: string) => number;
   familyPricing: (familyId: string) => FamilyPricing | undefined;
@@ -72,24 +82,75 @@ interface Ctx {
 
 const Context = createContext<Ctx | null>(null);
 
-/**
- * Recompute the running balance of a customer's ledger after entries have
- * been removed. This keeps the statement consistent when an invoice, payment
- * or whole customer is deleted.
- */
-async function recalcCustomerLedger(customerId: string): Promise<void> {
-  const entries = await db.ledger.where("customerId").equals(customerId).toArray();
-  entries.sort(
-    (a, b) =>
-      String(a.date || "").localeCompare(String(b.date || "")) ||
-      String(a.createdAt || "").localeCompare(String(b.createdAt || "")),
+const isoNow = () => new Date().toISOString();
+const setOp = (name: string, id: string, data: unknown): WriteOp => ({ type: "set", ref: docRef(name, id), data });
+const delOp = (name: string, id: string): WriteOp => ({ type: "delete", ref: docRef(name, id) });
+/** Keeps the transaction-safe balance document in sync with ledger mutations. */
+const balanceOp = (customerId: string, amount: number): WriteOp => ({
+  type: "set",
+  ref: balanceRef(customerId),
+  data: { amount, updatedAt: isoNow() },
+});
+
+function makeAudit(user: User | null, action: string, entity: string, entityId: string, details: string) {
+  const entry: AuditLog = {
+    id: uid(), action, entity, entityId, details,
+    user: user?.name || "system", createdAt: isoNow(),
+  };
+  return { entry, op: setOp("audit", entry.id, entry) };
+}
+
+/** Timeout protects the UI from hung requests; never assume a timeout = failure. */
+const MUTATION_TIMEOUT = 15000;
+function guard<T>(name: string, work: () => Promise<T>): Promise<T> {
+  return measured(name, "data", () => withTimeout(work(), MUTATION_TIMEOUT, name));
+}
+/** Only used where an idempotency key makes a retry safe. */
+function guardIdempotent<T>(name: string, work: () => Promise<T>): Promise<T> {
+  return measured(name, "data", () =>
+    retry(() => withTimeout(work(), MUTATION_TIMEOUT, name), { retries: 1, baseDelay: 500, label: name }),
   );
-  let balance = 0;
-  for (const entry of entries) {
-    balance += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
-    entry.balance = balance;
-    await db.ledger.put(entry);
+}
+
+/** Reads the canonical balance document, falling back to the ledger-derived value on first use. */
+async function txBalance(tx: Transaction, customerId: string, fallback: number): Promise<number> {
+  const snap = await tx.get(balanceRef(customerId));
+  const data = snap.data() as { amount?: unknown } | undefined;
+  return typeof data?.amount === "number" && Number.isFinite(data.amount) ? data.amount : fallback;
+}
+
+/** Releases paidAmount on invoices when a payment is reversed or deleted. */
+async function unapplyInvoiceOps(allocs: PaymentAllocation[]): Promise<WriteOp[]> {
+  const totals = new Map<string, number>();
+  for (const alloc of allocs) totals.set(alloc.invoiceId, (totals.get(alloc.invoiceId) || 0) + (Number(alloc.amount) || 0));
+  const invoices = await Promise.all([...totals].map(([id]) => db.invoices.get(id)));
+  const ops: WriteOp[] = [];
+  for (const inv of invoices) {
+    if (!inv) continue;
+    const paid = Number(inv.paidAmount ?? inv.paymentReceived ?? 0) || 0;
+    ops.push(setOp("invoices", inv.id, {
+      ...inv,
+      paidAmount: Math.max(0, paid - (totals.get(inv.id) || 0)),
+      updatedAt: isoNow(),
+    }));
   }
+  return ops;
+}
+
+interface InvoiceTxResult {
+  inv: Invoice;
+  entries: LedgerEntry[];
+  payment?: Payment;
+  allocation?: PaymentAllocation;
+  settings?: BusinessSettings;
+  audit?: AuditLog;
+}
+
+interface PaymentTxResult {
+  payment: Payment;
+  allocations: PaymentAllocation[];
+  entry?: LedgerEntry;
+  audit?: AuditLog;
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
@@ -107,41 +168,53 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [audit, setAudit] = useState<AuditLog[]>([]);
 
+  // Derived indexes are rebuilt only when their source array changes.
+  const customerById = useMemo(() => indexById(customers), [customers]);
+  const productById = useMemo(() => indexById(products), [products]);
+  const familyById = useMemo(() => indexById(families), [families]);
+  const invoiceById = useMemo(() => indexById(invoices), [invoices]);
+  const pricingByFamily = useMemo(() => new Map(pricing.map((p) => [p.familyId, p])), [pricing]);
+  const ledgerByCustomer = useMemo(() => indexBy(ledger, (l) => l.customerId), [ledger]);
+  const balancesByCustomer = useMemo(() => latestBalancesByCustomer(ledger, customers), [ledger, customers]);
+  const paidByInvoiceMap = useMemo(() => paidByInvoice(allocations), [allocations]);
+  const invoicesByCustomer = useMemo(() => indexBy(invoices, (i) => i.customerId), [invoices]);
+  const paymentsByCustomer = useMemo(() => indexBy(payments, (p) => p.customerId), [payments]);
+  const productsByFamilyMap = useMemo(() => indexBy(products, (p) => p.familyId), [products]);
+
   const refresh = useCallback(async () => {
-    // Load all collections in parallel so start-up only pays one round-trip,
-    // not one per collection.
-    const [s, cust, fam, pr, prod, inv, pay, alloc, ledg, exp, aud, u] = await Promise.all([
-      db.settings.get("main"),
-      db.customers.toArray(),
-      db.families.toArray(),
-      db.pricing.toArray(),
-      db.products.toArray(),
-      db.invoices.toArray(),
-      db.payments.toArray(),
-      db.allocations.toArray(),
-      db.ledger.toArray(),
-      db.expenses.toArray(),
-      db.audit.toArray(),
-      currentUser(),
-    ]);
-    setSettings(s || null);
-    setCustomers(cust);
-    setFamilies(fam);
-    setPricing(pr);
-    setProducts(prod);
-    setInvoices(inv);
-    setPayments(pay);
-    setAllocations(alloc);
-    setLedger(ledg);
-    setExpenses(exp);
-    setAudit(aud);
-    setUser(u);
+    return measured("data.refresh", "data", async () => {
+      const [s, cust, fam, pr, prod, inv, pay, alloc, ledg, exp, aud, u] = await Promise.all([
+        db.settings.get("main"),
+        db.customers.toArray(),
+        db.families.toArray(),
+        db.pricing.toArray(),
+        db.products.toArray(),
+        db.invoices.toArray(),
+        db.payments.toArray(),
+        db.allocations.toArray(),
+        db.ledger.toArray(),
+        db.expenses.toArray(),
+        db.audit.toArray(),
+        currentUser(),
+      ]);
+      setSettings(s || null);
+      setCustomers(cust);
+      setFamilies(fam);
+      setPricing(pr);
+      setProducts(prod);
+      setInvoices(inv);
+      setPayments(pay);
+      setAllocations(alloc);
+      setLedger(ledg);
+      setExpenses(exp);
+      setAudit(aud);
+      setUser(u);
+    });
   }, []);
 
   useEffect(() => { (async () => {
     const fbUser = await waitForAuth();
     if (fbUser && isDefaultAdminEmail(fbUser.email)) {
-      // Kill any existing session belonging to the disabled bootstrap account.
       await doLogout();
       setReady(true);
       return;
@@ -167,9 +240,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             localStorage.setItem("maph_seeded", "1");
           } catch (e) { console.error(e); }
         }
-        try {
-          await cleanupLegacySeededData();
-        } catch (e) { console.error(e); }
+        try { await cleanupLegacySeededData(); } catch (e) { console.error(e); }
         await refresh();
       } catch (e) { console.error(e); }
     }
@@ -177,150 +248,181 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   })(); }, [refresh]);
 
   const log = useCallback(async (action: string, entity: string, entityId: string, details: string) => {
-    const u = await currentUser();
-    const entry: AuditLog = { id: uid(), action, entity, entityId, details, user: u?.name || "system", createdAt: new Date().toISOString() };
-    await db.audit.put(entry);
-    setAudit((prev) => [entry, ...prev]);
-  }, []);
+    const a = makeAudit(user, action, entity, entityId, details);
+    await guard("audit.write", () => commitWrites([a.op]));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user]);
 
-  // customers
+  // ── customers ────────────────────────────────────────────────────────────
   const addCustomer = useCallback(async (c: Omit<Customer, "id" | "createdAt">) => {
-    const cust: Customer = { ...c, id: uid(), createdAt: new Date().toISOString() };
-    await db.customers.put(cust);
+    const cust: Customer = { ...c, id: uid(), createdAt: isoNow() };
+    const ops: WriteOp[] = [setOp("customers", cust.id, cust), balanceOp(cust.id, cust.openingBalance)];
+    const newEntries: LedgerEntry[] = [];
     if (cust.openingBalance !== 0) {
-      await db.ledger.put({ id: uid(), customerId: cust.id, date: new Date().toISOString().slice(0, 10), type: "opening", reference: "OPEN", description: "Opening balance", debit: cust.openingBalance > 0 ? cust.openingBalance : 0, credit: cust.openingBalance < 0 ? -cust.openingBalance : 0, balance: cust.openingBalance, createdAt: new Date().toISOString() });
+      const entry: LedgerEntry = {
+        id: uid(), customerId: cust.id, date: isoNow().slice(0, 10), type: "opening", reference: "OPEN",
+        description: "Opening balance", debit: cust.openingBalance > 0 ? cust.openingBalance : 0,
+        credit: cust.openingBalance < 0 ? -cust.openingBalance : 0, balance: cust.openingBalance, createdAt: isoNow(),
+      };
+      ops.push(setOp("ledger", entry.id, entry));
+      newEntries.push(entry);
     }
-    await log("create", "customer", cust.id, `Created customer ${cust.name}`);
-    await refresh();
+    const a = makeAudit(user, "create", "customer", cust.id, `Created customer ${cust.name}`);
+    ops.push(a.op);
+    await guard("customer.create", () => commitWrites(ops));
+    setCustomers((prev) => [cust, ...prev]);
+    if (newEntries.length) setLedger((prev) => [...prev, ...newEntries]);
+    setAudit((prev) => [a.entry, ...prev]);
     return cust;
-  }, [log, refresh]);
+  }, [user]);
 
-  const updateCustomer = useCallback(async (c: Customer) => { await db.customers.put(c); await log("update", "customer", c.id, `Updated customer ${c.name}`); await refresh(); }, [log, refresh]);
+  const updateCustomer = useCallback(async (c: Customer) => {
+    const a = makeAudit(user, "update", "customer", c.id, `Updated customer ${c.name}`);
+    await guard("customer.update", () => commitWrites([setOp("customers", c.id, c), a.op]));
+    setCustomers((prev) => prev.map((x) => (x.id === c.id ? c : x)));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user]);
 
   const deleteCustomer = useCallback(async (id: string) => {
-    const c = await db.customers.get(id);
+    const c = customerById.get(id);
     if (!c) return;
+    const [invs, pays, allAlloc, entries] = await Promise.all([
+      db.invoices.where("customerId").equals(id).toArray(),
+      db.payments.where("customerId").equals(id).toArray(),
+      db.allocations.toArray(),
+      db.ledger.where("customerId").equals(id).toArray(),
+    ]);
+    const invoiceIds = new Set(invs.map((x) => x.id));
+    const paymentIds = new Set(pays.map((x) => x.id));
+    const allocs = allAlloc.filter((a) => invoiceIds.has(a.invoiceId) || paymentIds.has(a.paymentId));
+    const a = makeAudit(user, "delete", "customer", id, `Deleted customer ${c.name} with ${invs.length} invoice(s) and ${pays.length} payment(s)`);
+    const ops: WriteOp[] = [
+      ...allocs.map((x) => delOp("allocations", x.id)),
+      ...invs.map((x) => delOp("invoices", x.id)),
+      ...pays.map((x) => delOp("payments", x.id)),
+      ...entries.map((x) => delOp("ledger", x.id)),
+      delOp("customerBalances", id), delOp("customers", id), a.op,
+    ];
+    await guard("customer.delete", () => commitWrites(ops));
+    setCustomers((prev) => prev.filter((x) => x.id !== id));
+    setInvoices((prev) => prev.filter((x) => !invoiceIds.has(x.id)));
+    setPayments((prev) => prev.filter((x) => !paymentIds.has(x.id)));
+    setAllocations((prev) => prev.filter((x) => !allocs.some((y) => y.id === x.id)));
+    setLedger((prev) => prev.filter((x) => x.customerId !== id));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, customerById]);
 
-    // Full cascade: invoices, payments, their allocations and the complete
-    // customer ledger are removed together, otherwise Firestore would keep
-    // orphaned records and the customer could never be deleted.
-    const invs = await db.invoices.where("customerId").equals(id).toArray();
-    const pays = await db.payments.where("customerId").equals(id).toArray();
-    const allocations = await db.allocations.toArray();
-    const invoiceIds = new Set(invs.map((invoice) => invoice.id));
-    const paymentIds = new Set(pays.map((payment) => payment.id));
-
-    for (const allocation of allocations) {
-      if (invoiceIds.has(allocation.invoiceId) || paymentIds.has(allocation.paymentId)) {
-        await db.allocations.delete(allocation.id);
-      }
-    }
-    for (const invoice of invs) await db.invoices.delete(invoice.id);
-    for (const payment of pays) await db.payments.delete(payment.id);
-
-    const entries = await db.ledger.where("customerId").equals(id).toArray();
-    for (const entry of entries) await db.ledger.delete(entry.id);
-
-    await db.customers.delete(id);
-    await log(
-      "delete",
-      "customer",
-      id,
-      `Deleted customer ${c.name} with ${invs.length} invoice(s) and ${pays.length} payment(s)`,
-    );
-    await refresh();
-  }, [log, refresh]);
-
-  // families
+  // ── families / pricing / products ────────────────────────────────────────
   const addFamily = useCallback(async (name: string, description = "") => {
-    const f: ProductFamily = { id: uid(), name, description, status: "active", createdAt: new Date().toISOString() };
-    await db.families.put(f);
-    await db.pricing.put({ familyId: f.id, drumPrice: 0, gallonPrice: 0, quartarPrice: 0, updatedAt: new Date().toISOString() });
-    await log("create", "family", f.id, `Created family ${name}`);
-    await refresh();
+    const f: ProductFamily = { id: uid(), name, description, status: "active", createdAt: isoNow() };
+    const fp: FamilyPricing = { familyId: f.id, drumPrice: 0, gallonPrice: 0, quartarPrice: 0, updatedAt: isoNow() };
+    const a = makeAudit(user, "create", "family", f.id, `Created family ${name}`);
+    await guard("family.create", () => commitWrites([setOp("families", f.id, f), setOp("pricing", f.id, fp), a.op]));
+    setFamilies((prev) => [f, ...prev]);
+    setPricing((prev) => [fp, ...prev]);
+    setAudit((prev) => [a.entry, ...prev]);
     return f;
-  }, [log, refresh]);
+  }, [user]);
 
-  const updateFamily = useCallback(async (f: ProductFamily) => { await db.families.put(f); await log("update", "family", f.id, `Updated family ${f.name}`); await refresh(); }, [log, refresh]);
+  const updateFamily = useCallback(async (f: ProductFamily) => {
+    const a = makeAudit(user, "update", "family", f.id, `Updated family ${f.name}`);
+    await guard("family.update", () => commitWrites([setOp("families", f.id, f), a.op]));
+    setFamilies((prev) => prev.map((x) => (x.id === f.id ? f : x)));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user]);
 
   const deleteFamily = useCallback(async (id: string) => {
-    const f = await db.families.get(id);
+    const f = familyById.get(id);
     if (!f) return;
-
-    // Cascade the family's catalogue so the delete always completes.
     const famProducts = await db.products.where("familyId").equals(id).toArray();
-    for (const product of famProducts) await db.products.delete(product.id);
-    await db.pricing.delete(id);
-    await db.families.delete(id);
-    await log("delete", "family", id, `Deleted family ${f.name} and ${famProducts.length} product(s)`);
-    await refresh();
-  }, [log, refresh]);
+    const a = makeAudit(user, "delete", "family", id, `Deleted family ${f.name} and ${famProducts.length} product(s)`);
+    const ops: WriteOp[] = [
+      ...famProducts.map((p) => delOp("products", p.id)),
+      delOp("pricing", id), delOp("families", id), a.op,
+    ];
+    await guard("family.delete", () => commitWrites(ops));
+    const removed = new Set(famProducts.map((p) => p.id));
+    setProducts((prev) => prev.filter((p) => !removed.has(p.id)));
+    setPricing((prev) => prev.filter((p) => p.familyId !== id));
+    setFamilies((prev) => prev.filter((x) => x.id !== id));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, familyById]);
 
   const updateFamilyPricing = useCallback(async (familyId: string, drum: number, gallon: number, quartar: number) => {
-    const fp: FamilyPricing = { familyId, drumPrice: toPaisa(drum), gallonPrice: toPaisa(gallon), quartarPrice: toPaisa(quartar), updatedAt: new Date().toISOString() };
-    await db.pricing.put(fp);
-    const famProducts = await db.products.where("familyId").equals(familyId).toArray();
-    let affected = 0;
-    for (const p of famProducts) {
+    const fp: FamilyPricing = {
+      familyId, drumPrice: toPaisa(drum), gallonPrice: toPaisa(gallon), quartarPrice: toPaisa(quartar), updatedAt: isoNow(),
+    };
+    const nowIso = isoNow();
+    const affectedProducts: Product[] = [];
+    for (const p of productsByFamilyMap.get(familyId) || []) {
       if (p.override) continue;
-      if (p.size === "Drum") p.price = fp.drumPrice;
-      else if (p.size === "Gallon") p.price = fp.gallonPrice;
-      else if (p.size === "Quartar") p.price = fp.quartarPrice;
-      else continue;
-      p.updatedAt = new Date().toISOString();
-      await db.products.put(p);
-      affected++;
+      const price = p.size === "Drum" ? fp.drumPrice : p.size === "Gallon" ? fp.gallonPrice : p.size === "Quartar" ? fp.quartarPrice : 0;
+      if (!price && p.size === "Other") continue;
+      affectedProducts.push({ ...p, price, updatedAt: nowIso });
     }
-    await log("update-pricing", "family", familyId, `Updated pricing; affected ${affected} products`);
-    await refresh();
-    return { affected };
-  }, [log, refresh]);
+    const a = makeAudit(user, "update-pricing", "family", familyId, `Updated pricing; affected ${affectedProducts.length} products`);
+    const ops: WriteOp[] = [
+      setOp("pricing", familyId, fp),
+      ...affectedProducts.map((p) => setOp("products", p.id, p)),
+      a.op,
+    ];
+    await guard("pricing.update", () => commitWrites(ops));
+    const changed = new Map(affectedProducts.map((p) => [p.id, p]));
+    setPricing((prev) => [fp, ...prev.filter((p) => p.familyId !== familyId)]);
+    setProducts((prev) => prev.map((p) => changed.get(p.id) || p));
+    setAudit((prev) => [a.entry, ...prev]);
+    return { affected: affectedProducts.length };
+  }, [user, productsByFamilyMap]);
 
-  // products
   const addProduct = useCallback(async (p: Omit<Product, "id" | "createdAt" | "updatedAt">) => {
-    const fp = await db.pricing.get(p.familyId);
+    const fp = pricingByFamily.get(p.familyId);
     let price = p.price;
     if (!p.override && fp) {
       if (p.size === "Drum") price = fp.drumPrice;
       else if (p.size === "Gallon") price = fp.gallonPrice;
       else if (p.size === "Quartar") price = fp.quartarPrice;
     }
-    const prod: Product = { ...p, id: uid(), price, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    await db.products.put(prod);
-    await log("create", "product", prod.id, `Created product ${prod.name}`);
-    await refresh();
+    const prod: Product = { ...p, id: uid(), price, createdAt: isoNow(), updatedAt: isoNow() };
+    const a = makeAudit(user, "create", "product", prod.id, `Created product ${prod.name}`);
+    await guard("product.create", () => commitWrites([setOp("products", prod.id, prod), a.op]));
+    setProducts((prev) => [prod, ...prev]);
+    setAudit((prev) => [a.entry, ...prev]);
     return prod;
-  }, [log, refresh]);
+  }, [user, pricingByFamily]);
 
-  const updateProduct = useCallback(async (p: Product) => { p.updatedAt = new Date().toISOString(); await db.products.put(p); await log("update", "product", p.id, `Updated product ${p.name}`); await refresh(); }, [log, refresh]);
+  const updateProduct = useCallback(async (p: Product) => {
+    const next = { ...p, updatedAt: isoNow() };
+    const a = makeAudit(user, "update", "product", p.id, `Updated product ${p.name}`);
+    await guard("product.update", () => commitWrites([setOp("products", p.id, next), a.op]));
+    setProducts((prev) => prev.map((x) => (x.id === p.id ? next : x)));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user]);
 
   const deleteProduct = useCallback(async (id: string) => {
-    const p = await db.products.get(id);
+    const p = productById.get(id);
     if (!p) return;
-    await db.products.delete(id);
-    await log("delete", "product", id, `Deleted product ${p.name}`);
-    await refresh();
-  }, [log, refresh]);
+    const a = makeAudit(user, "delete", "product", id, `Deleted product ${p.name}`);
+    await guard("product.delete", () => commitWrites([delOp("products", id), a.op]));
+    setProducts((prev) => prev.filter((x) => x.id !== id));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, productById]);
 
   const toggleProduct = useCallback(async (id: string) => {
-    const p = await db.products.get(id);
+    const p = productById.get(id);
     if (!p) return;
-    p.active = !p.active;
-    p.updatedAt = new Date().toISOString();
-    await db.products.put(p);
-    await refresh();
-  }, [refresh]);
+    const next = { ...p, active: !p.active, updatedAt: isoNow() };
+    await guard("product.toggle", () => commitWrites([setOp("products", id, next)]));
+    setProducts((prev) => prev.map((x) => (x.id === id ? next : x)));
+  }, [productById]);
 
   const importProducts = useCallback(async (rows: any[]) => {
-    // Prepare lookup maps once. The previous version queried Firestore for
-    // every single row, which made a 700+ product import very slow.
-    const existingFamilies = await db.families.toArray();
-    const familyByName = new Map(existingFamilies.map((family) => [family.name.trim().toLowerCase(), family]));
-    const existingProducts = await db.products.toArray();
+    const nowIso = isoNow();
+    const familyByName = new Map(families.map((f) => [f.name.trim().toLowerCase(), f]));
     const productKeys = new Set(
-      existingProducts.map((product) => `${product.familyId}|${(product.colourCode || "").toLowerCase()}|${product.size}`),
+      products.map((p) => `${p.familyId}|${(p.colourCode || "").toLowerCase()}|${p.size}`),
     );
-    const pricingCache = new Map<string, { drumPrice: number; gallonPrice: number; quartarPrice: number; updatedAt: string }>();
+    const pricingCache = new Map<string, FamilyPricing>();
+    for (const fp of pricing) pricingCache.set(fp.familyId, fp);
 
     const pick = (row: any, ...keys: string[]): string => {
       for (const key of keys) {
@@ -333,417 +435,543 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return "";
     };
 
-    let imported = 0;
-    let familiesCreated = 0;
-    let duplicates = 0;
-    let missing = 0;
-    let review = 0;
-    let pricesUpdated = 0;
+    let imported = 0, familiesCreated = 0, duplicates = 0, missing = 0, review = 0, pricesUpdated = 0;
     const pricedFamilies = new Set<string>();
+    const ops: WriteOp[] = [];
+    const newFamilies: ProductFamily[] = [];
+    const newPricing: FamilyPricing[] = [];
+    const newProducts: Product[] = [];
 
     for (const row of rows) {
       const familyName = pick(row, "family", "familyName", "productFamily", "category", "productCategory");
-      if (!familyName) {
-        review++;
-        continue;
-      }
+      if (!familyName) { review++; continue; }
 
       let family = familyByName.get(familyName.toLowerCase());
       if (!family) {
         family = {
-          id: uid(),
-          name: familyName,
-          description: pick(row, "familyDescription", "description"),
-          status: "active",
-          createdAt: new Date().toISOString(),
+          id: uid(), name: familyName, description: pick(row, "familyDescription", "description"),
+          status: "active", createdAt: nowIso,
         };
-        await db.families.put(family);
-        await db.pricing.put({
-          familyId: family.id,
-          drumPrice: 0,
-          gallonPrice: 0,
-          quartarPrice: 0,
-          updatedAt: new Date().toISOString(),
-        });
+        ops.push(setOp("families", family.id, family));
+        newFamilies.push(family);
         familyByName.set(familyName.toLowerCase(), family);
         familiesCreated++;
       }
 
-      // Optional family-level prices can be supplied in the CSV. They are
-      // written once per family and then used for rows that omit a price.
       if (!pricedFamilies.has(family.id)) {
         const drum = parseFloat(pick(row, "drumPrice", "drum"));
         const gallon = parseFloat(pick(row, "gallonPrice", "gallon"));
         const quartar = parseFloat(pick(row, "quartarPrice", "quartar", "quart"));
         if (!Number.isNaN(drum) || !Number.isNaN(gallon) || !Number.isNaN(quartar)) {
-          const current = await db.pricing.get(family.id);
-          const next = {
+          const current = pricingCache.get(family.id);
+          const next: FamilyPricing = {
             familyId: family.id,
             drumPrice: Number.isNaN(drum) ? current?.drumPrice || 0 : toPaisa(drum),
             gallonPrice: Number.isNaN(gallon) ? current?.gallonPrice || 0 : toPaisa(gallon),
             quartarPrice: Number.isNaN(quartar) ? current?.quartarPrice || 0 : toPaisa(quartar),
-            updatedAt: new Date().toISOString(),
+            updatedAt: nowIso,
           };
-          await db.pricing.put(next);
+          ops.push(setOp("pricing", family.id, next));
           pricingCache.set(family.id, next);
+          newPricing.push(next);
           pricedFamilies.add(family.id);
           pricesUpdated++;
         }
       }
 
       if (!pricingCache.has(family.id)) {
-        const current = await db.pricing.get(family.id);
-        pricingCache.set(
-          family.id,
-          current || { drumPrice: 0, gallonPrice: 0, quartarPrice: 0, updatedAt: new Date().toISOString() },
-        );
+        const current: FamilyPricing = pricingCache.get(family.id) || {
+          familyId: family.id, drumPrice: 0, gallonPrice: 0, quartarPrice: 0, updatedAt: nowIso,
+        };
+        pricingCache.set(family.id, current);
       }
-      const pricing = pricingCache.get(family.id)!;
+      const pricingForFamily = pricingCache.get(family.id)!;
 
       const colourCode = pick(row, "colourCode", "colorCode", "colour", "color", "shadeCode", "shade");
       const sizeRaw = pick(row, "size", "packaging", "unit", "pack");
       const sizeKey = sizeRaw.toLowerCase();
-      const size = (sizeKey.includes("drum")
-        ? "Drum"
-        : sizeKey.includes("gallon")
-          ? "Gallon"
-          : sizeKey.includes("quart")
-            ? "Quartar"
-            : "Other") as Product["size"];
-
-      const name =
-        pick(row, "name", "productName", "colourName", "colorName", "shadeName", "product") ||
-        `${familyName}${colourCode ? ` ${colourCode}` : ""}`;
+      const size = (sizeKey.includes("drum") ? "Drum" : sizeKey.includes("gallon") ? "Gallon" : sizeKey.includes("quart") ? "Quartar" : "Other") as Product["size"];
+      const name = pick(row, "name", "productName", "colourName", "colorName", "shadeName", "product") || `${familyName}${colourCode ? ` ${colourCode}` : ""}`;
       const code = pick(row, "code", "sku", "productCode", "itemCode") || `${familyName.slice(0, 3).toUpperCase()}-${colourCode || size}`;
       const key = `${family.id}|${colourCode.toLowerCase()}|${size}`;
-      if (productKeys.has(key)) {
-        duplicates++;
-        continue;
-      }
+      if (productKeys.has(key)) { duplicates++; continue; }
 
       const explicitPrice = parseFloat(pick(row, "price", "rate", "retailPrice", "sellingPrice", "unitPrice"));
-      const familyPrice = size === "Drum" ? pricing.drumPrice : size === "Gallon" ? pricing.gallonPrice : size === "Quartar" ? pricing.quartarPrice : 0;
+      const familyPrice = size === "Drum" ? pricingForFamily.drumPrice : size === "Gallon" ? pricingForFamily.gallonPrice : size === "Quartar" ? pricingForFamily.quartarPrice : 0;
       const price = !Number.isNaN(explicitPrice) ? toPaisa(explicitPrice) : familyPrice;
       if (!price) missing++;
 
       const product: Product = {
-        id: uid(),
-        name,
-        colourCode,
-        familyId: family.id,
-        size,
-        price,
-        override: size === "Other",
-        code,
+        id: uid(), name, colourCode, familyId: family.id, size, price, override: size === "Other", code,
         category: pick(row, "productCategory", "category") || familyName,
         brand: pick(row, "brand", "company") || familyName,
         description: pick(row, "description", "notes"),
         active: !["false", "0", "no", "inactive"].includes(pick(row, "active").toLowerCase()),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: nowIso, updatedAt: nowIso,
       };
-      await db.products.put(product);
+      ops.push(setOp("products", product.id, product));
       productKeys.add(key);
+      newProducts.push(product);
       imported++;
     }
 
-    await log(
-      "import",
-      "product",
-      "bulk",
-      `Imported ${imported} products, ${familiesCreated} new families, ${pricesUpdated} family price sets`,
-    );
-    await refresh();
+    const a = makeAudit(user, "import", "product", "bulk", `Imported ${imported} products, ${familiesCreated} new families, ${pricesUpdated} family price sets`);
+    ops.push(a.op);
+    await guard("product.import", () => commitWrites(ops));
+    setFamilies((prev) => [...newFamilies, ...prev]);
+    setPricing((prev) => {
+      const map = new Map(prev.map((p) => [p.familyId, p]));
+      for (const fp of newPricing) map.set(fp.familyId, fp);
+      return [...map.values()];
+    });
+    setProducts((prev) => [...newProducts, ...prev]);
+    setAudit((prev) => [a.entry, ...prev]);
     return { imported, families: familiesCreated, duplicates, missing, review, pricesUpdated, totalRows: rows.length };
-  }, [log, refresh]);
+  }, [user, families, products, pricing]);
 
-  // invoices
-  const customerBalance = useCallback((customerId: string): number => {
-    const entries = ledger.filter((l) => l.customerId === customerId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    if (entries.length === 0) { const c = customers.find((x) => x.id === customerId); return c?.openingBalance || 0; }
-    return entries[entries.length - 1].balance;
-  }, [ledger, customers]);
+  // ── helper: O(1) balances ────────────────────────────────────────────────
+  const customerBalance = useCallback((customerId: string) => balancesByCustomer.get(customerId) || 0, [balancesByCustomer]);
+  const invoiceBalance = useCallback((invoiceId: string) => {
+    const inv = invoiceById.get(invoiceId);
+    return inv ? (Number(inv.netPayable) || 0) - (paidByInvoiceMap.get(invoiceId) || 0) : 0;
+  }, [invoiceById, paidByInvoiceMap]);
 
-  const invoiceBalance = useCallback((invoiceId: string): number => {
-    const inv = invoices.find((i) => i.id === invoiceId);
-    if (!inv) return 0;
-    const allocs = allocations.filter((a) => a.invoiceId === invoiceId);
-    const paid = allocs.reduce((s, a) => s + a.amount, 0);
-    return inv.netPayable - paid;
-  }, [invoices, allocations]);
+  // ── invoices ─────────────────────────────────────────────────────────────
+  const createInvoice = useCallback(async (input: { customerId: string; date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; paymentReceived?: number; notes?: string; status?: "draft" | "finalized"; bonus?: boolean; idempotencyKey?: string }) => {
+    const key = input.idempotencyKey || uid();
+    const invoiceId = idempotentId("inv", key);
+    const ledgerIds = { invoice: idempotentId("led", key), payment: idempotentId("ledpay", key) };
+    const paymentId = idempotentId("pay", key);
+    const allocationId = idempotentId("alloc", key);
+    const a = makeAudit(user, "create", "invoice", invoiceId, "Created invoice");
 
-  const createInvoice = useCallback(async (input: { customerId: string; date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; paymentReceived?: number; notes?: string; status?: "draft" | "finalized"; bonus?: boolean }) => {
-    const cust = await db.customers.get(input.customerId);
-    if (!cust) throw new Error("Customer not found");
-    const st = await db.settings.get("main");
-    const counter = (st?.invoiceCounter || 1000) + 1;
-    if (st) { st.invoiceCounter = counter; await db.settings.put(st); }
-    const number = `${st?.invoicePrefix || "INV"}-${counter}`;
-
-    const invItems: InvoiceItem[] = [];
-    let subtotal = 0;
-    for (const it of input.items) {
-      let prod = products.find((p) => p.id === it.productId);
-      if (!prod) prod = await db.products.get(it.productId);
-      if (!prod) continue;
-      const unitPrice = it.unitPrice !== undefined ? toPaisa(it.unitPrice) : prod.price;
-      const lineTotal = unitPrice * it.qty;
-      subtotal += lineTotal;
-      invItems.push({ id: uid(), productId: prod.id, productName: prod.name, productCode: prod.code, unit: prod.size, unitPrice, qty: it.qty, lineTotal });
-    }
-
-    const discountPercent = input.discountPercent !== undefined ? input.discountPercent : cust.discount;
-    const discountAmount = percentOf(subtotal, discountPercent);
-    const netPayable = subtotal - discountAmount;
-    const paymentReceived = toPaisa(input.paymentReceived || 0);
-    const balanceDue = netPayable - paymentReceived;
-
-    const custEntries = ledger.filter((l) => l.customerId === input.customerId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    const currentBal = custEntries.length ? custEntries[custEntries.length - 1].balance : (cust.openingBalance || 0);
-
-    const status = input.status || "finalized";
-    const bonus = input.bonus || false;
-    const inv: Invoice = { id: uid(), number, customerId: cust.id, customerName: cust.name, customerDiscount: cust.discount, date: input.date, items: invItems, subtotal, discountPercent, discountAmount, netPayable, paymentReceived, balanceDue, previousBalance: currentBal, notes: input.notes || "", bonus, status, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    await db.invoices.put(inv);
-
-    const newLedgerEntries: LedgerEntry[] = [];
-    let newPayment: Payment | null = null;
-    let newAllocation: PaymentAllocation | null = null;
-
-    if (status === "finalized") {
-      const newBal = currentBal + netPayable;
-      const invoiceEntry: LedgerEntry = { id: uid(), customerId: cust.id, date: input.date, type: "invoice", reference: number, description: bonus ? `Bonus invoice ${number}` : `Invoice ${number}`, debit: netPayable, credit: 0, balance: newBal, bonus, createdAt: new Date().toISOString() };
-      await db.ledger.put(invoiceEntry);
-      newLedgerEntries.push(invoiceEntry);
-      if (paymentReceived > 0) {
-        const pay: Payment = { id: uid(), receiptNumber: `RCPT-${counter}`, customerId: cust.id, customerName: cust.name, date: input.date, amount: paymentReceived, method: "Cash", reference: number, notes: "Initial payment on invoice", createdAt: new Date().toISOString() };
-        await db.payments.put(pay);
-        newPayment = pay;
-        const allocation: PaymentAllocation = { id: uid(), paymentId: pay.id, invoiceId: inv.id, amount: paymentReceived, createdAt: new Date().toISOString() };
-        await db.allocations.put(allocation);
-        newAllocation = allocation;
-        const paymentEntry: LedgerEntry = { id: uid(), customerId: cust.id, date: input.date, type: "payment", reference: pay.receiptNumber, description: `Payment ${pay.receiptNumber}`, debit: 0, credit: paymentReceived, balance: newBal - paymentReceived, createdAt: new Date().toISOString() };
-        await db.ledger.put(paymentEntry);
-        newLedgerEntries.push(paymentEntry);
-        inv.paymentReceived = paymentReceived;
-        inv.balanceDue = netPayable - paymentReceived;
-        await db.invoices.put(inv);
+    return guardIdempotent("invoice.create", async () => {
+      // Resolve prices from the in-memory index; only fetch products missing
+      // from local state (rare — e.g. another tab imported a catalogue).
+      const invItems: InvoiceItem[] = [];
+      for (const it of input.items) {
+        const prod = productById.get(it.productId) || await db.products.get(it.productId);
+        if (!prod) continue;
+        const unitPrice = it.unitPrice !== undefined ? toPaisa(it.unitPrice) : prod.price;
+        invItems.push({
+          id: uid(), productId: prod.id, productName: prod.name, productCode: prod.code,
+          unit: prod.size, unitPrice, qty: it.qty, lineTotal: unitPrice * it.qty,
+        });
       }
-    }
+      const subtotal = sumBy(invItems, (i) => i.lineTotal);
+      const status = input.status || "finalized";
+      const bonus = input.bonus || false;
 
-    await log("create", "invoice", inv.id, `Created invoice ${number}`);
+      const result = await runTransaction(firestore, async (tx): Promise<InvoiceTxResult> => {
+        const duplicateSnap = await tx.get(docRef("invoices", invoiceId));
+        if (duplicateSnap.exists()) return { inv: duplicateSnap.data() as Invoice, entries: [] };
 
-    // Update local state without a full refresh to keep the UI responsive.
-    setInvoices((prev) => [inv, ...prev.filter((x) => x.id !== inv.id)]);
-    if (st) setSettings(st);
-    if (newLedgerEntries.length) setLedger((prev) => [...prev, ...newLedgerEntries]);
-    if (newPayment) setPayments((prev) => [newPayment!, ...prev]);
-    if (newAllocation) setAllocations((prev) => [...prev, newAllocation!]);
+        const custSnap = await tx.get(docRef("customers", input.customerId));
+        const cust = custSnap.data() as Customer | undefined;
+        if (!cust) throw new Error("Customer not found");
+        const stSnap = await tx.get(docRef("settings", "main"));
+        const st = stSnap.data() as BusinessSettings | undefined;
+        const counter = (Number(st?.invoiceCounter) || 1000) + 1;
+        const number = `${st?.invoicePrefix || "INV"}-${counter}`;
 
-    return inv;
-  }, [log, refresh, ledger, products]);
+        const discountPercent = input.discountPercent !== undefined ? input.discountPercent : cust.discount;
+        const discountAmount = percentOf(subtotal, discountPercent);
+        const netPayable = subtotal - discountAmount;
+        const received = status === "finalized" ? toPaisa(input.paymentReceived || 0) : 0;
+        const balanceDue = netPayable - received;
 
-  const updateInvoice = useCallback(async (inv: Invoice) => { inv.updatedAt = new Date().toISOString(); await db.invoices.put(inv); await log("update", "invoice", inv.id, `Updated invoice ${inv.number}`); await refresh(); }, [log, refresh]);
+        const currentBal = await txBalance(tx, cust.id, Number(balancesByCustomer.get(cust.id) ?? cust.openingBalance) || 0);
+
+        const inv: Invoice = {
+          id: invoiceId, number, customerId: cust.id, customerName: cust.name, customerDiscount: cust.discount,
+          date: input.date, items: invItems, subtotal, discountPercent, discountAmount, netPayable,
+          paymentReceived: received, balanceDue, previousBalance: currentBal, notes: input.notes || "", bonus, status,
+          createdAt: isoNow(), updatedAt: isoNow(), idempotencyKey: key, paidAmount: received,
+        };
+        tx.set(docRef("invoices", inv.id), inv as any);
+        tx.set(balanceRef(cust.id), { amount: status === "finalized" ? currentBal + netPayable - received : currentBal, updatedAt: isoNow() } as any);
+        if (st) tx.set(docRef("settings", "main"), { ...st, invoiceCounter: counter } as any);
+
+        const entries: LedgerEntry[] = [];
+        let payment: Payment | undefined;
+        let allocation: PaymentAllocation | undefined;
+        if (status === "finalized") {
+          const newBal = currentBal + netPayable;
+          const invoiceEntry: LedgerEntry = {
+            id: ledgerIds.invoice, customerId: cust.id, date: input.date, type: "invoice", reference: number,
+            description: bonus ? `Bonus invoice ${number}` : `Invoice ${number}`,
+            debit: netPayable, credit: 0, balance: newBal, bonus, createdAt: isoNow(),
+          };
+          tx.set(docRef("ledger", invoiceEntry.id), invoiceEntry as any);
+          entries.push(invoiceEntry);
+          if (received > 0) {
+            payment = {
+              id: paymentId, receiptNumber: `RCPT-${counter}`, customerId: cust.id, customerName: cust.name,
+              date: input.date, amount: received, method: "Cash", reference: number,
+              notes: "Initial payment on invoice", createdAt: isoNow(), idempotencyKey: `${key}:payment`,
+            };
+            allocation = { id: allocationId, paymentId: payment.id, invoiceId: inv.id, amount: received, createdAt: isoNow() };
+            const paymentEntry: LedgerEntry = {
+              id: ledgerIds.payment, customerId: cust.id, date: input.date, type: "payment",
+              reference: payment.receiptNumber, description: `Payment ${payment.receiptNumber}`,
+              debit: 0, credit: received, balance: newBal - received, createdAt: isoNow(),
+            };
+            tx.set(docRef("payments", payment.id), payment as any);
+            tx.set(docRef("allocations", allocation.id), allocation as any);
+            tx.set(docRef("ledger", paymentEntry.id), paymentEntry as any);
+            entries.push(paymentEntry);
+          }
+        }
+        a.entry.entityId = inv.id;
+        a.entry.details = `Created invoice ${number}`;
+        tx.set(docRef("audit", a.entry.id), a.entry as any);
+        return { inv, entries, payment, allocation, settings: st ? { ...st, invoiceCounter: counter } : undefined, audit: a.entry };
+      });
+
+      // Optimistic/persisted state update — no 12-collection refresh.
+      setInvoices((prev) => [result.inv, ...prev.filter((x) => x.id !== result.inv.id)]);
+      if (result.settings) setSettings(result.settings);
+      if (result.entries.length) setLedger((prev) => [...prev, ...result.entries]);
+      if (result.payment) setPayments((prev) => [result.payment!, ...prev]);
+      if (result.allocation) setAllocations((prev) => [...prev, result.allocation!]);
+      if (result.audit) setAudit((prev) => [result.audit!, ...prev]);
+      return result.inv;
+    });
+  }, [user, productById, balancesByCustomer]);
+
+  const updateInvoice = useCallback(async (inv: Invoice) => {
+    const next = { ...inv, updatedAt: isoNow() };
+    const a = makeAudit(user, "update", "invoice", inv.id, `Updated invoice ${inv.number}`);
+    await guard("invoice.update", () => commitWrites([setOp("invoices", inv.id, next), a.op]));
+    setInvoices((prev) => prev.map((x) => (x.id === inv.id ? next : x)));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user]);
 
   const editInvoice = useCallback(async (id: string, input: { date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; notes?: string; bonus?: boolean }) => {
-    const inv = await db.invoices.get(id);
-    if (!inv) throw new Error("Invoice not found");
-    if (inv.status === "cancelled" || inv.status === "void") throw new Error("Cancelled invoices cannot be edited.");
-
     const invItems: InvoiceItem[] = [];
-    let subtotal = 0;
     for (const it of input.items) {
-      let prod = products.find((p) => p.id === it.productId);
-      if (!prod) prod = await db.products.get(it.productId);
+      const prod = productById.get(it.productId) || await db.products.get(it.productId);
       if (!prod) continue;
       const unitPrice = it.unitPrice !== undefined ? toPaisa(it.unitPrice) : prod.price;
-      const lineTotal = unitPrice * it.qty;
-      subtotal += lineTotal;
-      invItems.push({ id: uid(), productId: prod.id, productName: prod.name, productCode: prod.code, unit: prod.size, unitPrice, qty: it.qty, lineTotal });
+      invItems.push({
+        id: uid(), productId: prod.id, productName: prod.name, productCode: prod.code,
+        unit: prod.size, unitPrice, qty: it.qty, lineTotal: unitPrice * it.qty,
+      });
     }
+    const subtotal = sumBy(invItems, (i) => i.lineTotal);
+    const a = makeAudit(user, "update", "invoice", id, "Edited invoice");
 
-    const oldNet = inv.netPayable;
-    const discountPercent = input.discountPercent !== undefined ? input.discountPercent : inv.discountPercent;
-    const discountAmount = percentOf(subtotal, discountPercent);
-    const netPayable = subtotal - discountAmount;
-    const paid = Math.min(inv.paymentReceived, netPayable);
+    const result = await guard("invoice.edit", () => runTransaction(firestore, async (tx) => {
+      const snap = await tx.get(docRef("invoices", id));
+      const current = snap.data() as Invoice | undefined;
+      if (!current) throw new Error("Invoice not found");
+      if (current.status === "cancelled" || current.status === "void") throw new Error("Cancelled invoices cannot be edited.");
+      const oldNet = Number(current.netPayable) || 0;
+      const discountPercent = input.discountPercent !== undefined ? input.discountPercent : current.discountPercent;
+      const discountAmount = percentOf(subtotal, discountPercent);
+      const netPayable = subtotal - discountAmount;
+      const paid = Math.min(Number(current.paymentReceived) || 0, netPayable);
+      const next: Invoice = {
+        ...current, date: input.date, items: invItems, subtotal, discountPercent, discountAmount,
+        netPayable, paymentReceived: paid, balanceDue: netPayable - paid,
+        paidAmount: Number(current.paidAmount ?? current.paymentReceived ?? 0) || 0,
+        notes: input.notes ?? current.notes, bonus: input.bonus !== undefined ? input.bonus : current.bonus,
+        updatedAt: isoNow(),
+      };
+      tx.set(docRef("invoices", id), next as any);
 
-    inv.date = input.date;
-    inv.items = invItems;
-    inv.subtotal = subtotal;
-    inv.discountPercent = discountPercent;
-    inv.discountAmount = discountAmount;
-    inv.netPayable = netPayable;
-    inv.paymentReceived = paid;
-    inv.balanceDue = netPayable - paid;
-    inv.notes = input.notes ?? inv.notes;
-    if (input.bonus !== undefined) inv.bonus = input.bonus;
-    inv.updatedAt = new Date().toISOString();
-    await db.invoices.put(inv);
-
-    // Keep the customer ledger consistent: append an adjustment for the
-    // difference instead of rewriting historical entries.
-    let adjustmentEntry: LedgerEntry | null = null;
-    if (inv.status === "finalized" && netPayable !== oldNet) {
-      const delta = netPayable - oldNet;
-      const bal = customerBalance(inv.customerId);
-      adjustmentEntry = { id: uid(), customerId: inv.customerId, date: input.date, type: "adjustment", reference: inv.number, description: `Adjusted invoice ${inv.number}`, debit: delta > 0 ? delta : 0, credit: delta < 0 ? -delta : 0, balance: bal + delta, createdAt: new Date().toISOString() };
-      await db.ledger.put(adjustmentEntry);
-    }
-
-    await log("update", "invoice", id, `Edited invoice ${inv.number}`);
-
-    setInvoices((prev) => prev.map((x) => (x.id === inv.id ? inv : x)));
-    if (adjustmentEntry) setLedger((prev) => [...prev, adjustmentEntry!]);
-
-    return inv;
-  }, [log, refresh, customerBalance, products]);
-
-  const deleteInvoice = useCallback(async (id: string) => {
-    const inv = await db.invoices.get(id);
-    if (!inv) return;
-
-    // Delete the invoice, its payment allocations and the ledger rows that
-    // belong to it, then rebuild the running balances. Payments themselves are
-    // kept as unallocated credit so the customer's money is never lost.
-    const allocs = await db.allocations.where("invoiceId").equals(id).toArray();
-    for (const allocation of allocs) await db.allocations.delete(allocation.id);
-
-    const entries = await db.ledger.where("customerId").equals(inv.customerId).toArray();
-    for (const entry of entries) {
-      if (entry.reference === inv.number && (entry.type === "invoice" || entry.type === "adjustment")) {
-        await db.ledger.delete(entry.id);
+      let adjustment: LedgerEntry | undefined;
+      if (next.status === "finalized" && netPayable !== oldNet) {
+        const delta = netPayable - oldNet;
+        const bal = await txBalance(tx, current.customerId, Number(balancesByCustomer.get(current.customerId) ?? current.previousBalance) || 0);
+        tx.set(balanceRef(current.customerId), { amount: bal + delta, updatedAt: isoNow() } as any);
+        adjustment = {
+          id: uid(), customerId: current.customerId, date: input.date, type: "adjustment",
+          reference: current.number, description: `Adjusted invoice ${current.number}`,
+          debit: delta > 0 ? delta : 0, credit: delta < 0 ? -delta : 0,
+          balance: bal + delta, createdAt: isoNow(),
+        };
+        tx.set(docRef("ledger", adjustment.id), adjustment as any);
       }
-    }
+      a.entry.details = `Edited invoice ${current.number}`;
+      tx.set(docRef("audit", a.entry.id), a.entry as any);
+      return { next, adjustment };
+    }));
 
-    await db.invoices.delete(id);
-    await recalcCustomerLedger(inv.customerId);
-    await log("delete", "invoice", id, `Deleted invoice ${inv.number}`);
-    await refresh();
-  }, [log, refresh]);
+    setInvoices((prev) => prev.map((x) => (x.id === id ? result.next : x)));
+    if (result.adjustment) setLedger((prev) => [...prev, result.adjustment!]);
+    setAudit((prev) => [a.entry, ...prev]);
+    return result.next;
+  }, [user, productById, balancesByCustomer]);
 
   const cancelInvoice = useCallback(async (id: string) => {
-    const inv = await db.invoices.get(id);
+    const inv = invoiceById.get(id) || await db.invoices.get(id);
     if (!inv) return;
-    inv.status = "cancelled"; inv.updatedAt = new Date().toISOString(); await db.invoices.put(inv);
-    const bal = customerBalance(inv.customerId);
-    await db.ledger.put({ id: uid(), customerId: inv.customerId, date: new Date().toISOString().slice(0, 10), type: "adjustment", reference: inv.number, description: `Cancelled invoice ${inv.number}`, debit: 0, credit: inv.netPayable, balance: bal - inv.netPayable, createdAt: new Date().toISOString() });
-    await log("cancel", "invoice", id, `Cancelled invoice ${inv.number}`);
-    await refresh();
-  }, [log, refresh, customerBalance]);
+    const a = makeAudit(user, "cancel", "invoice", id, `Cancelled invoice ${inv.number}`);
+    const nextBalance = customerBalance(inv.customerId) - (Number(inv.netPayable) || 0);
+    const adjustment: LedgerEntry = {
+      id: uid(), customerId: inv.customerId, date: isoNow().slice(0, 10), type: "adjustment",
+      reference: inv.number, description: `Cancelled invoice ${inv.number}`,
+      debit: 0, credit: Number(inv.netPayable) || 0,
+      balance: nextBalance, createdAt: isoNow(),
+    };
+    const next = { ...inv, status: "cancelled" as const, updatedAt: isoNow() };
+    const ops = [setOp("invoices", id, next), setOp("ledger", adjustment.id, adjustment), balanceOp(inv.customerId, nextBalance), a.op];
+    await guard("invoice.cancel", () => commitWrites(ops));
+    setInvoices((prev) => prev.map((x) => (x.id === id ? next : x)));
+    setLedger((prev) => [...prev, adjustment]);
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, invoiceById, customerBalance]);
 
-  const recordPayment = useCallback(async (input: { customerId: string; date: string; amount: number; method: string; reference?: string; notes?: string; allocations?: { invoiceId: string; amount: number }[] }) => {
-    const cust = await db.customers.get(input.customerId);
-    if (!cust) throw new Error("Customer not found");
-    const receiptNumber = `RCPT-${Date.now().toString().slice(-6)}`;
-    const amountPaisa = toPaisa(input.amount);
-    const pay: Payment = { id: uid(), receiptNumber, customerId: cust.id, customerName: cust.name, date: input.date, amount: amountPaisa, method: input.method, reference: input.reference || "", notes: input.notes || "", createdAt: new Date().toISOString() };
-    await db.payments.put(pay);
-    if (input.allocations && input.allocations.length > 0) {
-      for (const a of input.allocations) await db.allocations.put({ id: uid(), paymentId: pay.id, invoiceId: a.invoiceId, amount: toPaisa(a.amount), createdAt: new Date().toISOString() });
-    } else {
-      const custInvs = invoices.filter((i) => i.customerId === cust.id && i.status === "finalized").sort((a, b) => a.date.localeCompare(b.date));
-      let remaining = amountPaisa;
-      for (const inv of custInvs) {
-        const bal = invoiceBalance(inv.id);
-        if (bal <= 0) continue;
-        const alloc = Math.min(bal, remaining);
-        if (alloc > 0) { await db.allocations.put({ id: uid(), paymentId: pay.id, invoiceId: inv.id, amount: alloc, createdAt: new Date().toISOString() }); remaining -= alloc; if (remaining <= 0) break; }
-      }
-    }
-    const bal = customerBalance(cust.id);
-    await db.ledger.put({ id: uid(), customerId: cust.id, date: input.date, type: "payment", reference: receiptNumber, description: `Payment ${receiptNumber} (${input.method})`, debit: 0, credit: amountPaisa, balance: bal - amountPaisa, createdAt: new Date().toISOString() });
-    await log("create", "payment", pay.id, `Recorded payment ${receiptNumber}`);
-    await refresh();
-    return pay;
-  }, [log, refresh, invoices, allocations, ledger, customerBalance, invoiceBalance]);
+  const deleteInvoice = useCallback(async (id: string) => {
+    const inv = invoiceById.get(id) || await db.invoices.get(id);
+    if (!inv) return;
+    const [allocs, entries] = await Promise.all([
+      db.allocations.where("invoiceId").equals(id).toArray(),
+      db.ledger.where("customerId").equals(inv.customerId).toArray(),
+    ]);
+    const removed = entries.filter((e) => e.reference === inv.number && (e.type === "invoice" || e.type === "adjustment"));
+    const remaining = entries.filter((e) => !removed.some((r) => r.id === e.id));
+    const recalculated = recalculateLedgerBalances(remaining);
+    const a = makeAudit(user, "delete", "invoice", id, `Deleted invoice ${inv.number}`);
+    const finalBalance = recalculated.length ? Number(recalculated[recalculated.length - 1].balance) || 0 : 0;
+    const ops: WriteOp[] = [
+      ...allocs.map((x) => delOp("allocations", x.id)),
+      ...removed.map((x) => delOp("ledger", x.id)),
+      ...recalculated.map((x) => setOp("ledger", x.id, x)),
+      balanceOp(inv.customerId, finalBalance),
+      delOp("invoices", id), a.op,
+    ];
+    await guard("invoice.delete", () => commitWrites(ops));
+    const allocIds = new Set(allocs.map((x) => x.id));
+    setInvoices((prev) => prev.filter((x) => x.id !== id));
+    setAllocations((prev) => prev.filter((x) => !allocIds.has(x.id)));
+    setLedger((prev) => [...prev.filter((x) => x.customerId !== inv.customerId), ...recalculated]);
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, invoiceById]);
+
+  // ── payments ─────────────────────────────────────────────────────────────
+  const recordPayment = useCallback(async (input: { customerId: string; date: string; amount: number; method: string; reference?: string; notes?: string; allocations?: { invoiceId: string; amount: number }[]; idempotencyKey?: string }) => {
+    const key = input.idempotencyKey || uid();
+    const paymentId = idempotentId("pay", key);
+    const entryId = idempotentId("ledpay", key);
+    const receiptNumber = `RCPT-${key.replace(/[^a-zA-Z0-9]/g, "").slice(-6).toUpperCase() || Date.now().toString().slice(-6)}`;
+    const a = makeAudit(user, "create", "payment", paymentId, "Recorded payment");
+
+    return guardIdempotent("payment.record", async () => {
+      const amountPaisa = toPaisa(input.amount);
+
+      // One query outside the transaction supplies candidate invoices; the
+      // transaction then reads their current paidAmount atomically.
+      const candidates = input.allocations?.length
+        ? (await Promise.all(input.allocations.map((x) => db.invoices.get(x.invoiceId)))).filter((x): x is Invoice => !!x)
+        : (await db.invoices.where("customerId").equals(input.customerId).toArray())
+            .filter((i) => i.status === "finalized")
+            .sort((x, y) => String(x.date).localeCompare(String(y.date)));
+
+      const result = await guard("payment.transaction", () => runTransaction(firestore, async (tx): Promise<PaymentTxResult> => {
+        const dupSnap = await tx.get(docRef("payments", paymentId));
+        if (dupSnap.exists()) return { payment: dupSnap.data() as Payment, allocations: [] };
+        const custSnap = await tx.get(docRef("customers", input.customerId));
+        const cust = custSnap.data() as Customer | undefined;
+        if (!cust) throw new Error("Customer not found");
+
+        const snaps = await Promise.all(candidates.map((inv) => tx.get(docRef("invoices", inv.id))));
+        const currentInvoices = snaps.flatMap((snap) => (snap.exists() ? [snap.data() as Invoice] : []));
+        const invById = new Map(currentInvoices.map((inv) => [inv.id, inv]));
+        const invoiceUpdates = new Map<string, Invoice>();
+        const paidOf = (inv: Invoice) => {
+          const updated = invoiceUpdates.get(inv.id);
+          if (updated) return Number(updated.paidAmount) || 0;
+          return Number(inv.paidAmount ?? inv.paymentReceived ?? 0) || 0;
+        };
+        const applyToInvoice = (inv: Invoice, amount: number) => {
+          const paid = paidOf(inv);
+          const available = Math.max(0, (Number(inv.netPayable) || 0) - paid);
+          if (amount > available) throw new Error(`Allocation exceeds the outstanding balance of invoice ${inv.number}`);
+          if (amount <= 0) return;
+          const base = invoiceUpdates.get(inv.id) || inv;
+          invoiceUpdates.set(inv.id, { ...base, paidAmount: paid + amount, updatedAt: isoNow() });
+        };
+
+        const newAllocations: PaymentAllocation[] = [];
+        if (input.allocations && input.allocations.length > 0) {
+          for (let index = 0; index < input.allocations.length; index++) {
+            const requested = input.allocations[index];
+            const inv = invById.get(requested.invoiceId);
+            if (!inv) throw new Error("Invoice not found");
+            const amount = toPaisa(requested.amount);
+            applyToInvoice(inv, amount);
+            newAllocations.push({ id: idempotentId("alloc", `${key}:${index}`), paymentId, invoiceId: inv.id, amount, createdAt: isoNow() });
+          }
+        } else {
+          let remaining = amountPaisa;
+          for (const inv of currentInvoices) {
+            if (remaining <= 0) break;
+            const paid = paidOf(inv);
+            const available = Math.max(0, (Number(inv.netPayable) || 0) - paid);
+            const alloc = Math.min(available, remaining);
+            applyToInvoice(inv, alloc);
+            if (alloc > 0) {
+              newAllocations.push({ id: idempotentId("alloc", `${key}:${newAllocations.length}`), paymentId, invoiceId: inv.id, amount: alloc, createdAt: isoNow() });
+              remaining -= alloc;
+            }
+          }
+        }
+
+        const bal = await txBalance(tx, cust.id, Number(balancesByCustomer.get(cust.id) ?? cust.openingBalance) || 0);
+        const entry: LedgerEntry = {
+          id: entryId, customerId: cust.id, date: input.date, type: "payment", reference: receiptNumber,
+          description: `Payment ${receiptNumber} (${input.method})`,
+          debit: 0, credit: amountPaisa, balance: bal - amountPaisa, createdAt: isoNow(),
+        };
+        const pay: Payment = {
+          id: paymentId, idempotencyKey: key, receiptNumber, customerId: cust.id, customerName: cust.name,
+          date: input.date, amount: amountPaisa, method: input.method, reference: input.reference || "",
+          notes: input.notes || "", createdAt: isoNow(),
+        };
+        tx.set(docRef("payments", pay.id), pay as any);
+        for (const updated of invoiceUpdates.values()) tx.set(docRef("invoices", updated.id), updated as any);
+        for (const alloc of newAllocations) tx.set(docRef("allocations", alloc.id), alloc as any);
+        tx.set(balanceRef(cust.id), { amount: bal - amountPaisa, updatedAt: isoNow() } as any);
+        tx.set(docRef("ledger", entry.id), entry as any);
+        a.entry.details = `Recorded payment ${receiptNumber}`;
+        tx.set(docRef("audit", a.entry.id), a.entry as any);
+        return { payment: pay, allocations: newAllocations, entry, audit: a.entry };
+      }));
+
+      setPayments((prev) => [result.payment, ...prev.filter((p) => p.id !== result.payment.id)]);
+      if (result.allocations.length) setAllocations((prev) => [...prev, ...result.allocations]);
+      if (result.entry) setLedger((prev) => [...prev, result.entry!]);
+      if (result.audit) setAudit((prev) => [result.audit!, ...prev]);
+      return result.payment;
+    });
+  }, [user, balancesByCustomer]);
 
   const updatePayment = useCallback(async (p: Payment) => {
-    const old = await db.payments.get(p.id);
+    const old = payments.find((x) => x.id === p.id) || await db.payments.get(p.id);
     if (!old) return;
     const updated: Payment = { ...old, date: p.date, method: p.method, reference: p.reference, notes: p.notes };
-    await db.payments.put(updated);
-    // Keep the matching ledger row's date/description in sync. Amount and
-    // running balances are intentionally immutable here.
-    const entries = await db.ledger.where("customerId").equals(old.customerId).toArray();
-    for (const e of entries) {
-      if (e.reference === old.receiptNumber) {
-        e.date = p.date;
-        e.description = `Payment ${old.receiptNumber} (${p.method})`;
-        await db.ledger.put(e);
-      }
-    }
-    await log("update", "payment", p.id, `Updated payment ${old.receiptNumber}`);
-    await refresh();
-  }, [log, refresh]);
+    const matched = ledger.filter((e) => e.reference === old.receiptNumber).map((e) => ({
+      ...e, date: p.date, description: `Payment ${old.receiptNumber} (${p.method})`,
+    }));
+    const a = makeAudit(user, "update", "payment", p.id, `Updated payment ${old.receiptNumber}`);
+    const ops: WriteOp[] = [
+      setOp("payments", p.id, updated),
+      ...matched.map((e) => setOp("ledger", e.id, e)),
+      a.op,
+    ];
+    await guard("payment.update", () => commitWrites(ops));
+    setPayments((prev) => prev.map((x) => (x.id === p.id ? updated : x)));
+    const ids = new Set(matched.map((e) => e.id));
+    setLedger((prev) => prev.map((e) => (ids.has(e.id) ? matched.find((m) => m.id === e.id)! : e)));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, payments, ledger]);
 
   const reversePayment = useCallback(async (id: string) => {
-    const pay = await db.payments.get(id);
+    const pay = payments.find((x) => x.id === id) || await db.payments.get(id);
     if (!pay) return;
     const allocs = await db.allocations.where("paymentId").equals(id).toArray();
-    for (const a of allocs) await db.allocations.delete(a.id);
-    await db.payments.delete(id);
-    const bal = customerBalance(pay.customerId);
-    await db.ledger.put({ id: uid(), customerId: pay.customerId, date: new Date().toISOString().slice(0, 10), type: "adjustment", reference: pay.receiptNumber, description: `Reversed payment ${pay.receiptNumber}`, debit: pay.amount, credit: 0, balance: bal + pay.amount, createdAt: new Date().toISOString() });
-    await log("reverse", "payment", id, `Reversed payment ${pay.receiptNumber}`);
-    await refresh();
-  }, [log, refresh, customerBalance]);
+    const nextBalance = customerBalance(pay.customerId) + (Number(pay.amount) || 0);
+    const adjustment: LedgerEntry = {
+      id: uid(), customerId: pay.customerId, date: isoNow().slice(0, 10), type: "adjustment",
+      reference: pay.receiptNumber, description: `Reversed payment ${pay.receiptNumber}`,
+      debit: Number(pay.amount) || 0, credit: 0,
+      balance: nextBalance, createdAt: isoNow(),
+    };
+    const a = makeAudit(user, "reverse", "payment", id, `Reversed payment ${pay.receiptNumber}`);
+    const unapply = await unapplyInvoiceOps(allocs);
+    const ops: WriteOp[] = [
+      ...allocs.map((x) => delOp("allocations", x.id)),
+      ...unapply,
+      balanceOp(pay.customerId, nextBalance),
+      delOp("payments", id), setOp("ledger", adjustment.id, adjustment), a.op,
+    ];
+    await guard("payment.reverse", () => commitWrites(ops));
+    const allocIds = new Set(allocs.map((x) => x.id));
+    setPayments((prev) => prev.filter((x) => x.id !== id));
+    setAllocations((prev) => prev.filter((x) => !allocIds.has(x.id)));
+    const updatedInvoices = new Map(unapply.filter((o) => o.type === "set").map((o) => [o.ref.id, o.data as Invoice]));
+    if (updatedInvoices.size) setInvoices((prev) => prev.map((inv) => updatedInvoices.get(inv.id) || inv));
+    setLedger((prev) => [...prev, adjustment]);
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, payments, customerBalance]);
 
   const deletePayment = useCallback(async (id: string) => {
-    const pay = await db.payments.get(id);
+    const pay = payments.find((x) => x.id === id) || await db.payments.get(id);
     if (!pay) return;
+    const [allocs, entries] = await Promise.all([
+      db.allocations.where("paymentId").equals(id).toArray(),
+      db.ledger.where("customerId").equals(pay.customerId).toArray(),
+    ]);
+    const removed = entries.filter((e) => e.reference === pay.receiptNumber && e.type === "payment");
+    const remaining = entries.filter((e) => !removed.some((r) => r.id === e.id));
+    const recalculated = recalculateLedgerBalances(remaining);
+    const a = makeAudit(user, "delete", "payment", id, `Deleted payment ${pay.receiptNumber}`);
+    const unapply = await unapplyInvoiceOps(allocs);
+    const finalBalance = recalculated.length ? Number(recalculated[recalculated.length - 1].balance) || 0 : 0;
+    const ops: WriteOp[] = [
+      ...allocs.map((x) => delOp("allocations", x.id)),
+      ...unapply,
+      ...removed.map((x) => delOp("ledger", x.id)),
+      ...recalculated.map((x) => setOp("ledger", x.id, x)),
+      balanceOp(pay.customerId, finalBalance),
+      delOp("payments", id), a.op,
+    ];
+    await guard("payment.delete", () => commitWrites(ops));
+    const allocIds = new Set(allocs.map((x) => x.id));
+    setPayments((prev) => prev.filter((x) => x.id !== id));
+    setAllocations((prev) => prev.filter((x) => !allocIds.has(x.id)));
+    const updatedInvoices = new Map(unapply.filter((o) => o.type === "set").map((o) => [o.ref.id, o.data as Invoice]));
+    if (updatedInvoices.size) setInvoices((prev) => prev.map((inv) => updatedInvoices.get(inv.id) || inv));
+    setLedger((prev) => [...prev.filter((x) => x.customerId !== pay.customerId), ...recalculated]);
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, payments]);
 
-    const allocs = await db.allocations.where("paymentId").equals(id).toArray();
-    for (const allocation of allocs) await db.allocations.delete(allocation.id);
-
-    const entries = await db.ledger.where("customerId").equals(pay.customerId).toArray();
-    for (const entry of entries) {
-      if (entry.reference === pay.receiptNumber && entry.type === "payment") {
-        await db.ledger.delete(entry.id);
-      }
-    }
-
-    await db.payments.delete(id);
-    await recalcCustomerLedger(pay.customerId);
-    await log("delete", "payment", id, `Deleted payment ${pay.receiptNumber}`);
-    await refresh();
-  }, [log, refresh]);
-
+  // ── expenses / settings ──────────────────────────────────────────────────
   const addExpense = useCallback(async (e: Omit<Expense, "id" | "createdAt">) => {
-    const ex: Expense = { ...e, id: uid(), createdAt: new Date().toISOString() };
-    await db.expenses.put(ex);
-    await log("create", "expense", ex.id, `Created expense ${ex.description}`);
-    await refresh();
-  }, [log, refresh]);
+    const ex: Expense = { ...e, id: uid(), createdAt: isoNow() };
+    const a = makeAudit(user, "create", "expense", ex.id, `Created expense ${ex.description}`);
+    await guard("expense.create", () => commitWrites([setOp("expenses", ex.id, ex), a.op]));
+    setExpenses((prev) => [ex, ...prev]);
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user]);
 
   const updateExpense = useCallback(async (e: Expense) => {
-    await db.expenses.put(e);
-    await log("update", "expense", e.id, `Updated expense ${e.description}`);
-    await refresh();
-  }, [log, refresh]);
+    const a = makeAudit(user, "update", "expense", e.id, `Updated expense ${e.description}`);
+    await guard("expense.update", () => commitWrites([setOp("expenses", e.id, e), a.op]));
+    setExpenses((prev) => prev.map((x) => (x.id === e.id ? e : x)));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user]);
 
   const deleteExpense = useCallback(async (id: string) => {
-    const e = await db.expenses.get(id);
+    const e = expenses.find((x) => x.id === id);
     if (!e) return;
-    await db.expenses.delete(id);
-    await log("delete", "expense", id, `Deleted expense ${e.description}`);
-    await refresh();
-  }, [log, refresh]);
+    const a = makeAudit(user, "delete", "expense", id, `Deleted expense ${e.description}`);
+    await guard("expense.delete", () => commitWrites([delOp("expenses", id), a.op]));
+    setExpenses((prev) => prev.filter((x) => x.id !== id));
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user, expenses]);
 
-  const updateSettings = useCallback(async (s: BusinessSettings) => { await db.settings.put(s); await log("update", "settings", "main", "Updated settings"); await refresh(); }, [log, refresh]);
+  const updateSettings = useCallback(async (s: BusinessSettings) => {
+    const a = makeAudit(user, "update", "settings", "main", "Updated settings");
+    await guard("settings.update", () => commitWrites([setOp("settings", "main", s), a.op]));
+    setSettings(s);
+    setAudit((prev) => [a.entry, ...prev]);
+  }, [user]);
 
   const doLogoutFn = useCallback(() => {
     setUser(null);
-    // Reload after sign-out so the Firestore client is recreated cleanly on
-    // the next sign-in instead of reusing a stale, signed-out connection.
     void doLogout().finally(() => window.location.reload());
   }, []);
 
-  const familyPricing = useCallback((familyId: string) => pricing.find((p) => p.familyId === familyId), [pricing]);
-  const productsByFamily = useCallback((familyId: string) => products.filter((p) => p.familyId === familyId), [products]);
+  const familyPricing = useCallback((familyId: string) => pricingByFamily.get(familyId), [pricingByFamily]);
+  const productsByFamily = useCallback((familyId: string) => productsByFamilyMap.get(familyId) || [], [productsByFamilyMap]);
 
   const value: Ctx = {
     ready, user, settings, customers, families, pricing, products, invoices, payments, allocations, ledger, expenses, audit,
+    customerById, productById, familyById, pricingByFamily, ledgerByCustomer, balancesByCustomer,
+    paidByInvoiceMap, invoicesByCustomer, paymentsByCustomer,
     refresh, setUser, doLogout: doLogoutFn,
     addCustomer, updateCustomer, deleteCustomer,
     addFamily, updateFamily, deleteFamily, updateFamilyPricing, addProduct, updateProduct, deleteProduct, toggleProduct, importProducts,

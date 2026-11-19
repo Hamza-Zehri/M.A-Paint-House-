@@ -1,36 +1,45 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo, useDeferredValue, useEffect } from "react";
 import { useApp } from "../store/AppContext";
 import { Icon } from "../components/Icon";
 import { formatMoneyShort } from "../lib/money";
-import { invoicePdfBlob, invoicePdfName } from "../lib/pdfFile";
+import { invoicePdfBlob, invoicePdfName } from "../lib/pdfLazy";
 import { printInvoiceHtml, getInvoiceHtml } from "../lib/pdf";
 import { sharePdf } from "../lib/share";
 import { appConfirm, toast } from "../lib/dialog";
 import { useActionLock } from "../hooks/useActionLock";
 
 export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void }) {
-  const { invoices, settings, customers, allocations, cancelInvoice, deleteInvoice, invoiceBalance } = useApp();
+  const { invoices, settings, cancelInvoice, deleteInvoice, customerById, paidByInvoiceMap } = useApp();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [viewing, setViewing] = useState<any>(null);
   const [previewBusy, setPreviewBusy] = useState<string | null>(null);
   const [frameHeight, setFrameHeight] = useState<number | null>(null);
+  const [visibleCount, setVisibleCount] = useState(100);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const { isBusy, lock } = useActionLock();
-  const shown = invoices.filter((i) => {
-    if (statusFilter !== "all" && i.status !== statusFilter) return false;
-    return i.number.toLowerCase().includes(query.toLowerCase()) || i.customerName.toLowerCase().includes(query.toLowerCase());
-  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const deferredQuery = useDeferredValue(query);
+  const shown = useMemo(() => {
+    const q = deferredQuery.trim().toLowerCase();
+    return invoices
+      .filter((i) => {
+        if (statusFilter !== "all" && i.status !== statusFilter) return false;
+        return !q || i.number.toLowerCase().includes(q) || i.customerName.toLowerCase().includes(q);
+      })
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  }, [invoices, statusFilter, deferredQuery]);
+
+  useEffect(() => setVisibleCount(100), [deferredQuery, statusFilter]);
+
+  const paidFor = (invoice: any) => Math.max(paidByInvoiceMap.get(invoice.id) || 0, invoice.paymentReceived || 0);
+  const balanceFor = (invoice: any) => (Number(invoice.netPayable) || 0) - (paidByInvoiceMap.get(invoice.id) || 0);
 
   const shareInvoice = async (invoice: any) => {
-    const customer = customers.find((item) => item.id === invoice.customerId);
-    const allocated = allocations
-      .filter((allocation) => allocation.invoiceId === invoice.id)
-      .reduce((sum, allocation) => sum + allocation.amount, 0);
-    const paid = Math.max(allocated, invoice.paymentReceived || 0);
+    const customer = customerById.get(invoice.customerId);
+    const paid = paidFor(invoice);
     const due = Math.max(0, invoice.netPayable - paid);
     try {
-      const blob = invoicePdfBlob(invoice, settings, customer, paid);
+      const blob = await invoicePdfBlob(invoice, settings, customer, paid);
       const result = await sharePdf({
         blob,
         filename: invoicePdfName(invoice),
@@ -96,18 +105,16 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
           <table className="large-table">
             <thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Subtotal</th><th>Discount</th><th>Net</th><th>Balance</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {shown.map((i) => {
-                const customer = customers.find((item) => item.id === i.customerId);
-                const allocated = allocations
-                  .filter((allocation) => allocation.invoiceId === i.id)
-                  .reduce((sum, allocation) => sum + allocation.amount, 0);
-                const paid = Math.max(allocated, i.paymentReceived || 0);
+              {shown.slice(0, visibleCount).map((i) => {
+                const customer = customerById.get(i.customerId);
+                const paid = paidFor(i);
+                const balance = balanceFor(i);
 
                 return (
                   <tr key={i.id}>
                     <td><b>{i.number}</b></td><td>{i.customerName}</td><td>{i.date}</td><td>{formatMoneyShort(i.subtotal)}</td>
                     <td className="teal-text">{i.discountPercent}%</td><td><b>{formatMoneyShort(i.netPayable)}</b></td>
-                    <td className={invoiceBalance(i.id) > 0 ? "red-text" : ""}>{formatMoneyShort(invoiceBalance(i.id))}</td><td>{i.status}{i.bonus && <span title="Bonus invoice" style={{ marginLeft: 6, color: "#f59e0b" }}>★</span>}</td>
+                    <td className={balance > 0 ? "red-text" : ""}>{formatMoneyShort(balance)}</td><td>{i.status}{i.bonus && <span title="Bonus invoice" style={{ marginLeft: 6, color: "#f59e0b" }}>★</span>}</td>
                     <td><div className="row-actions">
                       <button onClick={() => { setViewing(i); setFrameHeight(null); }} title="View invoice"><Icon name="eye" size={16} /></button>
                       <button onClick={() => printInvoiceHtml(i, settings, customer, paid)} title="Print invoice"><Icon name="printer" size={16} /></button>
@@ -120,17 +127,23 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
                 );
               })}
               {shown.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 20 }}>No invoices</td></tr>}
+              {shown.length > visibleCount && (
+                <tr>
+                  <td colSpan={9} style={{ textAlign: "center", padding: 12 }}>
+                    <button type="button" className="btn btn-secondary" onClick={() => setVisibleCount((n) => n + 100)}>
+                      Show more invoices ({shown.length - visibleCount} remaining)
+                    </button>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
     </div>
     {viewing && (() => {
-      const vCustomer = customers.find((c) => c.id === viewing.customerId);
-      const vAllocated = allocations
-        .filter((a) => a.invoiceId === viewing.id)
-        .reduce((s, a) => s + a.amount, 0);
-      const vPaid = Math.max(vAllocated, viewing.paymentReceived || 0);
+      const vCustomer = customerById.get(viewing.customerId);
+      const vPaid = paidFor(viewing);
       const html = getInvoiceHtml(viewing, settings, false, vCustomer, vPaid, true);
       const status = viewing.status === "cancelled" || viewing.status === "void" ? "Cancelled" : viewing.status === "draft" ? "Draft" : vPaid >= viewing.netPayable ? "Paid" : "Partially paid";
       return (
@@ -150,13 +163,18 @@ export default function InvoiceHistory({ onEdit }: { onEdit?: (inv: any) => void
               </div>
             </header>
             <div className="invoice-preview-actions">
+              {onEdit && (
+                <button type="button" disabled={!!previewBusy} onClick={() => { onEdit(viewing); setViewing(null); }}>
+                  Edit invoice
+                </button>
+              )}
               <button type="button" disabled={!!previewBusy} onClick={async () => { setPreviewBusy("print"); try { printInvoiceHtml(viewing, settings, vCustomer, vPaid); } finally { setPreviewBusy(null); } }}>
                 {previewBusy === "print" ? "Printing..." : "Print"}
               </button>
               <button type="button" disabled={!!previewBusy} onClick={async () => {
                 setPreviewBusy("download");
                 try {
-                  const blob = invoicePdfBlob(viewing, settings, vCustomer, vPaid);
+                  const blob = await invoicePdfBlob(viewing, settings, vCustomer, vPaid);
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");
                   a.href = url; a.download = invoicePdfName(viewing); a.click();
