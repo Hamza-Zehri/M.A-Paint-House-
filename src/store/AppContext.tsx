@@ -506,14 +506,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const inv: Invoice = { id: uid(), number, customerId: cust.id, customerName: cust.name, customerDiscount: cust.discount, date: input.date, items: invItems, subtotal, discountPercent, discountAmount, netPayable, paymentReceived, balanceDue, previousBalance: currentBal, notes: input.notes || "", bonus, status, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     await db.invoices.put(inv);
 
+    const newLedgerEntries: LedgerEntry[] = [];
+    let newPayment: Payment | null = null;
+    let newAllocation: PaymentAllocation | null = null;
+
     if (status === "finalized") {
       const newBal = currentBal + netPayable;
-      await db.ledger.put({ id: uid(), customerId: cust.id, date: input.date, type: "invoice", reference: number, description: bonus ? `Bonus invoice ${number}` : `Invoice ${number}`, debit: netPayable, credit: 0, balance: newBal, bonus, createdAt: new Date().toISOString() });
+      const invoiceEntry: LedgerEntry = { id: uid(), customerId: cust.id, date: input.date, type: "invoice", reference: number, description: bonus ? `Bonus invoice ${number}` : `Invoice ${number}`, debit: netPayable, credit: 0, balance: newBal, bonus, createdAt: new Date().toISOString() };
+      await db.ledger.put(invoiceEntry);
+      newLedgerEntries.push(invoiceEntry);
       if (paymentReceived > 0) {
         const pay: Payment = { id: uid(), receiptNumber: `RCPT-${counter}`, customerId: cust.id, customerName: cust.name, date: input.date, amount: paymentReceived, method: "Cash", reference: number, notes: "Initial payment on invoice", createdAt: new Date().toISOString() };
         await db.payments.put(pay);
-        await db.allocations.put({ id: uid(), paymentId: pay.id, invoiceId: inv.id, amount: paymentReceived, createdAt: new Date().toISOString() });
-        await db.ledger.put({ id: uid(), customerId: cust.id, date: input.date, type: "payment", reference: pay.receiptNumber, description: `Payment ${pay.receiptNumber}`, debit: 0, credit: paymentReceived, balance: newBal - paymentReceived, createdAt: new Date().toISOString() });
+        newPayment = pay;
+        const allocation: PaymentAllocation = { id: uid(), paymentId: pay.id, invoiceId: inv.id, amount: paymentReceived, createdAt: new Date().toISOString() };
+        await db.allocations.put(allocation);
+        newAllocation = allocation;
+        const paymentEntry: LedgerEntry = { id: uid(), customerId: cust.id, date: input.date, type: "payment", reference: pay.receiptNumber, description: `Payment ${pay.receiptNumber}`, debit: 0, credit: paymentReceived, balance: newBal - paymentReceived, createdAt: new Date().toISOString() };
+        await db.ledger.put(paymentEntry);
+        newLedgerEntries.push(paymentEntry);
         inv.paymentReceived = paymentReceived;
         inv.balanceDue = netPayable - paymentReceived;
         await db.invoices.put(inv);
@@ -521,7 +532,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     await log("create", "invoice", inv.id, `Created invoice ${number}`);
-    await refresh();
+
+    // Update local state without a full refresh to keep the UI responsive.
+    setInvoices((prev) => [inv, ...prev.filter((x) => x.id !== inv.id)]);
+    if (st) setSettings(st);
+    if (newLedgerEntries.length) setLedger((prev) => [...prev, ...newLedgerEntries]);
+    if (newPayment) setPayments((prev) => [newPayment!, ...prev]);
+    if (newAllocation) setAllocations((prev) => [...prev, newAllocation!]);
+
     return inv;
   }, [log, refresh, ledger, products]);
 
@@ -565,19 +583,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     // Keep the customer ledger consistent: append an adjustment for the
     // difference instead of rewriting historical entries.
+    let adjustmentEntry: LedgerEntry | null = null;
     if (inv.status === "finalized" && netPayable !== oldNet) {
       const delta = netPayable - oldNet;
       const bal = customerBalance(inv.customerId);
-      await db.ledger.put({
-        id: uid(), customerId: inv.customerId, date: input.date, type: "adjustment",
-        reference: inv.number, description: `Adjusted invoice ${inv.number}`,
-        debit: delta > 0 ? delta : 0, credit: delta < 0 ? -delta : 0,
-        balance: bal + delta, createdAt: new Date().toISOString(),
-      });
+      adjustmentEntry = { id: uid(), customerId: inv.customerId, date: input.date, type: "adjustment", reference: inv.number, description: `Adjusted invoice ${inv.number}`, debit: delta > 0 ? delta : 0, credit: delta < 0 ? -delta : 0, balance: bal + delta, createdAt: new Date().toISOString() };
+      await db.ledger.put(adjustmentEntry);
     }
 
     await log("update", "invoice", id, `Edited invoice ${inv.number}`);
-    await refresh();
+
+    setInvoices((prev) => prev.map((x) => (x.id === inv.id ? inv : x)));
+    if (adjustmentEntry) setLedger((prev) => [...prev, adjustmentEntry!]);
+
     return inv;
   }, [log, refresh, customerBalance, products]);
 
