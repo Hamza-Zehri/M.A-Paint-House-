@@ -483,7 +483,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const invItems: InvoiceItem[] = [];
     let subtotal = 0;
     for (const it of input.items) {
-      const prod = await db.products.get(it.productId);
+      let prod = products.find((p) => p.id === it.productId);
+      if (!prod) prod = await db.products.get(it.productId);
       if (!prod) continue;
       const unitPrice = it.unitPrice !== undefined ? toPaisa(it.unitPrice) : prod.price;
       const lineTotal = unitPrice * it.qty;
@@ -522,7 +523,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await log("create", "invoice", inv.id, `Created invoice ${number}`);
     await refresh();
     return inv;
-  }, [log, refresh, ledger]);
+  }, [log, refresh, ledger, products]);
 
   const updateInvoice = useCallback(async (inv: Invoice) => { inv.updatedAt = new Date().toISOString(); await db.invoices.put(inv); await log("update", "invoice", inv.id, `Updated invoice ${inv.number}`); await refresh(); }, [log, refresh]);
 
@@ -534,7 +535,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const invItems: InvoiceItem[] = [];
     let subtotal = 0;
     for (const it of input.items) {
-      const prod = await db.products.get(it.productId);
+      let prod = products.find((p) => p.id === it.productId);
+      if (!prod) prod = await db.products.get(it.productId);
       if (!prod) continue;
       const unitPrice = it.unitPrice !== undefined ? toPaisa(it.unitPrice) : prod.price;
       const lineTotal = unitPrice * it.qty;
@@ -577,7 +579,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await log("update", "invoice", id, `Edited invoice ${inv.number}`);
     await refresh();
     return inv;
-  }, [log, refresh, customerBalance]);
+  }, [log, refresh, customerBalance, products]);
 
   const deleteInvoice = useCallback(async (id: string) => {
     const inv = await db.invoices.get(id);
