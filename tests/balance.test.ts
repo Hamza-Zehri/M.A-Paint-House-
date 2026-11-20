@@ -18,6 +18,7 @@ import {
   resetDiag,
   tokenFor,
 } from "../src/lib/firestoreDiagnostics.ts";
+import { withReadsBeforeWrites } from "../src/lib/transactionUtils.ts";
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -142,4 +143,63 @@ test("diagnostics hash customer ids and flag repeated identical reads", () => {
   assert.equal(snapshot.totals.activeListeners, 0);
   resetDiag();
   assert.equal(diagSnapshot().totals.balanceReads, 0);
+});
+
+test("transaction writes are staged until every read is finished", async () => {
+  const events: string[] = [];
+  let wrote = false;
+
+  const tx: any = {
+    get: async (_ref: unknown) => {
+      assert.equal(wrote, false, "Firestore saw a read after a write");
+      events.push("get");
+      return { exists: () => false };
+    },
+    set: (..._args: unknown[]) => {
+      wrote = true;
+      events.push("set");
+      return tx;
+    },
+    update: (..._args: unknown[]) => {
+      wrote = true;
+      events.push("update");
+      return tx;
+    },
+    delete: (..._args: unknown[]) => {
+      wrote = true;
+      events.push("delete");
+      return tx;
+    },
+  };
+
+  const result = await withReadsBeforeWrites(tx, async (deferred) => {
+    deferred.set("invoice" as any, {} as any);
+    await deferred.get("balance" as any);
+    deferred.update("ledger" as any, {} as any);
+    await deferred.get("audit" as any);
+    return "ok";
+  });
+
+  assert.equal(result, "ok");
+  assert.deepEqual(events, ["get", "get", "set", "update"]);
+});
+
+test("failed transaction work never applies staged writes", async () => {
+  const events: string[] = [];
+  const tx: any = {
+    get: async () => { events.push("get"); return { exists: () => false }; },
+    set: () => { events.push("set"); return tx; },
+    update: () => { events.push("update"); return tx; },
+    delete: () => { events.push("delete"); return tx; },
+  };
+
+  await assert.rejects(
+    withReadsBeforeWrites(tx, async (deferred) => {
+      deferred.set("invoice" as any, {} as any);
+      await deferred.get("balance" as any);
+      throw new Error("abort");
+    }),
+    /abort/,
+  );
+  assert.deepEqual(events, ["get"]);
 });

@@ -802,13 +802,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         notes: input.notes ?? current.notes, bonus: input.bonus !== undefined ? input.bonus : current.bonus,
         updatedAt: isoNow(),
       };
+
+      // All transaction reads must happen before the first write. Resolve the
+      // authoritative balance up front, then issue the staged writes below.
+      const needsAdjustment = next.status === "finalized" && netPayable !== oldNet;
+      const bal = needsAdjustment
+        ? await readBalanceInTransaction(tx, current.customerId, Number(balancesByCustomer.get(current.customerId) ?? current.previousBalance) || 0, "invoice.edit")
+        : undefined;
+
       tx.set(docRef("invoices", id), next as any);
 
       let adjustment: LedgerEntry | undefined;
       let nextBalance: number | undefined;
-      if (next.status === "finalized" && netPayable !== oldNet) {
+      if (needsAdjustment && bal !== undefined) {
         const delta = netPayable - oldNet;
-        const bal = await readBalanceInTransaction(tx, current.customerId, Number(balancesByCustomer.get(current.customerId) ?? current.previousBalance) || 0, "invoice.edit");
         nextBalance = bal + delta;
         tx.set(balanceRef(current.customerId), { amount: nextBalance, updatedAt: isoNow() } as any);
         adjustment = {

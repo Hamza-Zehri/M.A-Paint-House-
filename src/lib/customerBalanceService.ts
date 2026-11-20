@@ -55,6 +55,7 @@ import {
   recordRetry,
 } from "./firestoreDiagnostics";
 import type { BalanceSource } from "./firestoreDiagnostics";
+import { withReadsBeforeWrites } from "./transactionUtils";
 
 export type { BalanceSource };
 
@@ -224,7 +225,11 @@ export async function runCustomerTransaction<T>(
       assertQuotaAvailable();
       try {
         recordFirestoreCall("runTransaction");
-        return await runTransaction(firestore, updateFunction, { maxAttempts: 1 });
+        return await runTransaction(
+          firestore,
+          (tx) => withReadsBeforeWrites(tx, updateFunction),
+          { maxAttempts: 1 },
+        );
       } catch (error) {
         lastError = error;
         noteError(error, operation);

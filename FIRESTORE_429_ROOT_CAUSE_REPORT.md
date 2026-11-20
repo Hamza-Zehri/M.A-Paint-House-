@@ -72,6 +72,13 @@ The quota gate only checked *before* starting an action (`assertQuotaAvailable`)
 - `createInvoice`, `editInvoice` and `recordPayment` are wrapped in a module-level promise map keyed by idempotency key (or invoice id). A second click, remount, or outer timeout retry joins the original in-flight operation instead of opening a second transaction and repeating `tx.get(customerBalances/{id})`.
 - Duplicate-operation hits are exposed in diagnostics as `operationDedupHits`.
 
+### 2c. Transaction read/write ordering fixed — `src/lib/transactionUtils.ts`, `src/store/AppContext.tsx`
+
+- The edit-invoice handler wrote `docRef("invoices", id)` before its conditional `readBalanceInTransaction()`, which Firestore rejects with: **“Firestore transactions require all reads to be executed before all writes.”**
+- `editInvoice` now resolves the authoritative balance **before** the first `tx.set()`.
+- `runCustomerTransaction()` additionally wraps every update function with `withReadsBeforeWrites()`. That helper stages `set`/`update`/`delete` calls and applies them only after the handler completes all `tx.get()` calls, so a future handler cannot reintroduce read-after-write ordering by accident.
+- If the handler throws, staged writes are discarded and the transaction aborts. Firestore still buffers writes until commit; this only enforces the SDK's required ordering.
+
 ### 3. Retry-After and rate-limit handling — `src/lib/asyncUtils.ts`, `src/lib/firebase.ts`
 
 - `noteQuotaExhausted(retryAfterMs?)` stores a cooldown (60 s minimum, 5 min maximum) using **exponential backoff with jitter** (60 s → 120 s → 240 s for consecutive quota failures). `Retry-After` always wins over the computed delay. New requests are blocked by `assertQuotaAvailable()` until the cooldown expires; a 429 is never retried immediately.
@@ -116,8 +123,8 @@ All `db.ts` reads/writes are instrumented; no customer data is logged.
 ## Testing
 
 - `pnpm typecheck` — pass (0 errors).
-- `pnpm test` — **23/23 pass**, including per-customer mutex serialization/release, duplicate financial-action promise dedupe, exponential quota backoff with jitter, quota cooldown + Retry-After, and hashed diagnostics with duplicate-read detection.
-- `pnpm build` — pass (main chunk 959.39 kB raw / 288.14 kB gzip; unchanged scope).
+- `pnpm test` — **25/25 pass**, including per-customer mutex serialization/release, duplicate financial-action promise dedupe, exponential quota backoff with jitter, quota cooldown + Retry-After, hashed diagnostics with duplicate-read detection, and transaction read-before-write enforcement.
+- `pnpm build` — pass (main chunk 959.69 kB raw / 288.25 kB gzip; unchanged scope).
 - Browser smoke test after the latest build on the running dev server (`http://localhost:8443/`): login screen renders, `window.__maphFirestoreDiag` and `window.__maphPerf` are installed, **0 console errors**, **0 Firestore calls**, **0 balance reads**, **0 operation dedup hits**, **0 active listeners** before authentication.
 
 Not verifiable in this harness: authenticated end-to-end QA (dashboard → customer → ledger → invoice → payment → repeated navigation, throttled network) because no Firebase Authentication credentials are available here. Those steps must be run by the owner against the production project, using `window.__maphFirestoreDiag.snapshot()` before and after each flow. Expected result: `duplicateBalanceReads === 0`, `readsPerCustomer` grows by at most one per financial action, `operationDedupHits` only rises on intentional duplicate clicks, `activeListeners === 0`, `quotaEvents === 0` after a normal flow.
@@ -129,7 +136,7 @@ The later production console trace confirms the same diagnosis:
 - Request timestamps `01:42:51.812`, `01:42:53.557`, `01:42:54.643`, `01:42:57.171`, `01:43:00.702` are exactly **five** `BatchGetDocuments` attempts for the same `customerBalances/mwnfpsgj-qbw0xlmy` document. That matches the SDK default `maxAttempts: 5`, not the fixed build.
 - The stack includes `KS.retries`, `enqueueAfterDelay`, `handleDelayElapsed`, and `setTimeout`, which are Firestore's internal `TransactionRetry` async queue — not React state/effect retries.
 - The production chunk names in that trace are `index-ymKLqpr_.js`, `Invoice-C9P0ucy6.js`, and `useActionLock-2W4jBKN5.js`.
-- The current fixed local build emits `index-DgAwLPWm.js`, `Invoice-yUvHgaUk.js`, and `useActionLock-DNL0j9bw.js`.
+- The fixed build at that time emitted `index-DgAwLPWm.js`, `Invoice-yUvHgaUk.js`, and `useActionLock-DNL0j9bw.js`. The latest build after the read-before-write fix emits `index-BZNcOk3v.js`, `Invoice-CAeD47JS.js`, and `useActionLock-Djs_ObyI.js`.
 
 Therefore the tested production page was still serving the old bundle (or a cached old `index.html`). After deploying, verify the loaded chunk names change and hard-reload once before judging the fix.
 
