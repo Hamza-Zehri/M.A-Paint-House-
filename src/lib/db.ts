@@ -15,7 +15,19 @@ import {
 } from "firebase/firestore";
 import { firestore } from "./firebase";
 import { chunk } from "./selectors";
+import { recordFailure, recordFirestoreCall, recordQuota } from "./firestoreDiagnostics";
 import type { BusinessSettings, Customer, Product, ProductFamily, FamilyPricing, Invoice, Payment, PaymentAllocation, LedgerEntry, Expense, AuditLog, User } from "./types";
+
+/** Bounded diagnostics: operation name + error code only, never document data. */
+function tracked<T>(operation: string, work: () => Promise<T>): Promise<T> {
+  recordFirestoreCall(operation);
+  return work().catch((error: unknown) => {
+    const code = String((error as any)?.code || (error as any)?.name || "unknown");
+    recordFailure(code, operation);
+    if (code === "resource-exhausted") recordQuota(operation);
+    throw error;
+  });
+}
 
 export const COLLECTIONS = [
   "settings", "customers", "families", "pricing", "products", "invoices",
@@ -44,7 +56,7 @@ export function balanceRef(customerId: string): DocumentReference {
  */
 export async function getCachedDoc<T>(name: string, id: string): Promise<T | undefined> {
   try {
-    const snap = await getDocFromCache(docRef(name, id));
+    const snap = await tracked(`getDocFromCache.${name}`, () => getDocFromCache(docRef(name, id)));
     return snap.exists() ? (snap.data() as T) : undefined;
   } catch {
     return undefined;
@@ -67,13 +79,13 @@ export async function commitWrites(ops: WriteOp[]): Promise<void> {
       if (op.type === "set") batch.set(op.ref, op.data as any);
       else batch.delete(op.ref);
     }
-    await batch.commit();
+    await tracked("batch.commit", () => batch.commit());
   }
 }
 
 /** Cheap count: reads one aggregate instead of downloading every document. */
 export async function countDocs(name: string): Promise<number> {
-  const snap = await getCountFromServer(collection(firestore, name));
+  const snap = await tracked(`count.${name}`, () => getCountFromServer(collection(firestore, name)));
   return snap.data().count;
 }
 
@@ -81,20 +93,20 @@ class FirestoreTable<T> {
   constructor(public name: string, private idOf: (x: T) => string) {}
 
   async get(id: string): Promise<T | undefined> {
-    const snap = await getDoc(docRef(this.name, id));
+    const snap = await tracked(`getDoc.${this.name}`, () => getDoc(docRef(this.name, id)));
     return snap.exists() ? (snap.data() as T) : undefined;
   }
 
   async put(x: T): Promise<void> {
-    await setDoc(docRef(this.name, this.idOf(x)), x as any);
+    await tracked(`setDoc.${this.name}`, () => setDoc(docRef(this.name, this.idOf(x)), x as any));
   }
 
   async delete(id: string): Promise<void> {
-    await deleteDoc(docRef(this.name, id));
+    await tracked(`deleteDoc.${this.name}`, () => deleteDoc(docRef(this.name, id)));
   }
 
   async toArray(): Promise<T[]> {
-    const snap = await getDocs(collection(firestore, this.name));
+    const snap = await tracked(`getDocs.${this.name}`, () => getDocs(collection(firestore, this.name)));
     return snap.docs.map((d) => d.data() as T);
   }
 
@@ -108,11 +120,11 @@ class FirestoreTable<T> {
       equals(val: any) {
         return {
           async toArray(): Promise<T[]> {
-            const snap = await getDocs(query(collection(firestore, self.name), where(field, "==", val)));
+            const snap = await tracked(`query.${self.name}.${field}`, () => getDocs(query(collection(firestore, self.name), where(field, "==", val))));
             return snap.docs.map((d) => d.data() as T);
           },
           async first(): Promise<T | undefined> {
-            const snap = await getDocs(query(collection(firestore, self.name), where(field, "==", val), limit(1)));
+            const snap = await tracked(`query.${self.name}.${field}.first`, () => getDocs(query(collection(firestore, self.name), where(field, "==", val), limit(1))));
             return snap.empty ? undefined : (snap.docs[0].data() as T);
           },
         };
@@ -141,7 +153,7 @@ export const db = new AppDB();
 export async function clearAll() {
   for (const name of COLLECTIONS) {
     if (name === "users") continue; // profiles are never managed from the browser
-    const snap = await getDocs(collection(firestore, name));
+    const snap = await tracked(`clearAll.${name}`, () => getDocs(collection(firestore, name)));
     await commitWrites(snap.docs.map((d) => ({ type: "delete", ref: d.ref })));
   }
 }

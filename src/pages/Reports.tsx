@@ -7,7 +7,7 @@ import { sharePdf } from "../lib/share";
 import { toast } from "../lib/dialog";
 
 export default function Reports() {
-  const { invoices, payments, settings, customers, balancesByCustomer } = useApp();
+  const { invoices, payments, settings, customers, customerBalance } = useApp();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [monthFilter, setMonthFilter] = useState("all");
@@ -52,12 +52,12 @@ export default function Reports() {
   const outstandingRows = useMemo(() => {
     const rows: { name: string; balance: number }[] = [];
     for (const c of customers) {
-      // O(1) index lookup — identical to customerBalance(c.id).
-      const balance = balancesByCustomer.get(c.id) || 0;
+      // Shared balance service — no Firestore read while rendering the report.
+      const balance = customerBalance(c.id);
       if (balance !== 0) rows.push({ name: c.name, balance });
     }
     return rows;
-  }, [customers, balancesByCustomer]);
+  }, [customers, customerBalance]);
 
   const monthOptions = useMemo(
     () => Array.from(new Set([...invoices.map((i) => i.date || ""), ...payments.map((p) => p.date || "")].map((d) => d.slice(0, 7)))).filter(Boolean).sort().reverse(),

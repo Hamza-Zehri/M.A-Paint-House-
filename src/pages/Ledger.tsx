@@ -7,7 +7,7 @@ import { sharePdf } from "../lib/share";
 import { toast } from "../lib/dialog";
 
 export default function Ledger() {
-  const { customers, customerById, ledgerByCustomer, balancesByCustomer, settings } = useApp();
+  const { customers, customerById, ledgerByCustomer, customerBalance, settings } = useApp();
   const [customerId, setCustomerId] = useState(customers[0]?.id || "");
   const [monthFilter, setMonthFilter] = useState("all");
 
@@ -25,8 +25,8 @@ export default function Ledger() {
     () => (monthFilter === "all" ? baseEntries : baseEntries.filter((l) => (l.date || "").startsWith(monthFilter))),
     [baseEntries, monthFilter],
   );
-  // O(1) index lookup — identical to customerBalance(customer.id).
-  const bal = customer ? balancesByCustomer.get(customer.id) || 0 : 0;
+  // Shared balance service — display only, no per-render Firestore read.
+  const bal = customer ? customerBalance(customer.id) : 0;
   const closingBal = monthFilter !== "all" && entries.length ? entries[entries.length - 1].balance : bal;
 
   const entryTotals = useMemo(

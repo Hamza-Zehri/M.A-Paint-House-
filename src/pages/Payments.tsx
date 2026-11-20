@@ -12,7 +12,7 @@ const METHODS = ["Cash", "Bank transfer", "JazzCash", "EasyPaisa", "Cheque", "Ot
 const DRAFT_KEY = "maph_payment_draft_v1";
 
 export default function Payments() {
-  const { customers, payments, recordPayment, updatePayment, deletePayment, settings, customerById, balancesByCustomer } = useApp();
+  const { customers, payments, recordPayment, updatePayment, deletePayment, settings, customerById, customerBalance } = useApp();
   const [customerId, setCustomerId] = useState(customers[0]?.id || "");
   const [date, setDate] = useState(todayLocalISO());
   const [amount, setAmount] = useState("");
@@ -100,7 +100,7 @@ export default function Payments() {
   };
 
   const customer = customerById.get(customerId);
-  const bal = customer ? (balancesByCustomer.get(customer.id) || 0) : 0;
+  const bal = customer ? customerBalance(customer.id) : 0;
   const payPaisa = toPaisa(parseFloat(amount) || 0);
   const after = bal - payPaisa;
   const activeCustomers = useMemo(() => customers.filter((c) => c.active), [customers]);

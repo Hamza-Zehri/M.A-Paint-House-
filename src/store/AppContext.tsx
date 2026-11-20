@@ -1,18 +1,26 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from "react";
-import { runTransaction, type Transaction } from "firebase/firestore";
 import { db, docRef, balanceRef, getCachedDoc, commitWrites, type WriteOp } from "../lib/db";
-import { firestore } from "../lib/firebase";
+import {
+  balanceService,
+  balanceWriteOp,
+  getFreshBalance,
+  readBalanceInTransaction,
+  runCustomerTransaction,
+} from "../lib/customerBalanceService";
 import { seedIfEmpty, cleanupLegacySeededData } from "../lib/seed";
 import { toPaisa, uid, percentOf } from "../lib/money";
 import { currentUser, logout as doLogout, waitForAuth, isDefaultAdminEmail } from "../lib/auth";
 import { measured } from "../lib/perf";
+import { recordOperationDedup } from "../lib/firestoreDiagnostics";
 import {
   withTimeout,
   retry,
+  dedupePromise,
   friendlyError,
   isQuotaExhausted,
   isQuotaCoolingDown,
   noteQuotaExhausted,
+  assertQuotaAvailable,
 } from "../lib/asyncUtils";
 import { readSnapshot, writeSnapshot, type SnapshotData } from "../lib/snapshotCache";
 import {
@@ -94,11 +102,13 @@ const isoNow = () => new Date().toISOString();
 const setOp = (name: string, id: string, data: unknown): WriteOp => ({ type: "set", ref: docRef(name, id), data });
 const delOp = (name: string, id: string): WriteOp => ({ type: "delete", ref: docRef(name, id) });
 /** Keeps the transaction-safe balance document in sync with ledger mutations. */
-const balanceOp = (customerId: string, amount: number): WriteOp => ({
-  type: "set",
-  ref: balanceRef(customerId),
-  data: { amount, updatedAt: isoNow() },
-});
+const balanceOp = balanceWriteOp;
+
+/** Financial writes must authorize against a fresh server value, never a cache. */
+async function authoritativeBalance(customerId: string, fallback: number, operation: string): Promise<number> {
+  const fresh = await getFreshBalance(customerId, operation);
+  return fresh || fallback;
+}
 
 function makeAudit(user: User | null, action: string, entity: string, entityId: string, details: string) {
   const entry: AuditLog = {
@@ -110,13 +120,6 @@ function makeAudit(user: User | null, action: string, entity: string, entityId: 
 
 /** Timeout protects the UI from hung requests; never assume a timeout = failure. */
 const MUTATION_TIMEOUT = 15000;
-
-/** A quota failure is global — stop sending requests until the cooldown expires. */
-function assertQuotaAvailable() {
-  if (isQuotaCoolingDown()) {
-    throw new Error("Firestore quota cooldown is active. The saved data is shown from cache; please retry shortly.");
-  }
-}
 
 function observeQuota(error: unknown) {
   if (isQuotaExhausted(error)) noteQuotaExhausted();
@@ -143,13 +146,6 @@ function guardIdempotent<T>(name: string, work: () => Promise<T>): Promise<T> {
   );
 }
 
-/** Reads the canonical balance document, falling back to the ledger-derived value on first use. */
-async function txBalance(tx: Transaction, customerId: string, fallback: number): Promise<number> {
-  const snap = await tx.get(balanceRef(customerId));
-  const data = snap.data() as { amount?: unknown } | undefined;
-  return typeof data?.amount === "number" && Number.isFinite(data.amount) ? data.amount : fallback;
-}
-
 /** Releases paidAmount on invoices when a payment is reversed or deleted. */
 async function unapplyInvoiceOps(allocs: PaymentAllocation[]): Promise<WriteOp[]> {
   const totals = new Map<string, number>();
@@ -171,6 +167,8 @@ async function unapplyInvoiceOps(allocs: PaymentAllocation[]): Promise<WriteOp[]
 interface InvoiceTxResult {
   inv: Invoice;
   entries: LedgerEntry[];
+  balance?: number;
+  customerId?: string;
   payment?: Payment;
   allocation?: PaymentAllocation;
   settings?: BusinessSettings;
@@ -180,9 +178,19 @@ interface InvoiceTxResult {
 interface PaymentTxResult {
   payment: Payment;
   allocations: PaymentAllocation[];
+  balance?: number;
   entry?: LedgerEntry;
   audit?: AuditLog;
 }
+
+/**
+ * One promise per logical financial action. A second click, a remounted
+ * invoice screen, or a timeout retry joins the original transaction instead
+ * of opening another one with the same deterministic document IDs.
+ */
+const invoiceCreateInFlight = new Map<string, Promise<Invoice>>();
+const invoiceEditInFlight = new Map<string, Promise<Invoice>>();
+const paymentRecordInFlight = new Map<string, Promise<Payment>>();
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -224,7 +232,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setLedger(data.ledger);
     setExpenses(data.expenses);
     setAudit(data.audit);
+    balanceService.primeMany(latestBalancesByCustomer(data.ledger, data.customers), "ledger");
   }, []);
+
+  // Keep the shared balance service in step with the reactive ledger index.
+  // This is display data only; transactions read the canonical document.
+  useEffect(() => {
+    balanceService.primeMany(balancesByCustomer, "ledger");
+  }, [balancesByCustomer]);
 
   const snapshotData = useMemo<SnapshotData>(() => ({
     settings, customers, families, pricing, products, invoices,
@@ -359,6 +374,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const a = makeAudit(user, "create", "customer", cust.id, `Created customer ${cust.name}`);
     ops.push(a.op);
     await guard("customer.create", () => commitWrites(ops));
+    balanceService.prime(cust.id, cust.openingBalance, "local");
+    balanceService.writes(cust.id, "create");
     setCustomers((prev) => [cust, ...prev]);
     if (newEntries.length) setLedger((prev) => [...prev, ...newEntries]);
     setAudit((prev) => [a.entry, ...prev]);
@@ -393,6 +410,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       delOp("customerBalances", id), delOp("customers", id), a.op,
     ];
     await guard("customer.delete", () => commitWrites(ops));
+    balanceService.invalidate(id);
     setCustomers((prev) => prev.filter((x) => x.id !== id));
     setInvoices((prev) => prev.filter((x) => !invoiceIds.has(x.id)));
     setPayments((prev) => prev.filter((x) => !paymentIds.has(x.id)));
@@ -619,7 +637,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [user, families, products, pricing]);
 
   // ── helper: O(1) balances ────────────────────────────────────────────────
-  const customerBalance = useCallback((customerId: string) => balancesByCustomer.get(customerId) || 0, [balancesByCustomer]);
+  // Single balance API for every component. The service cache is kept in sync
+  // with the reactive ledger index above, with the ledger map as fallback.
+  const customerBalance = useCallback(
+    (customerId: string) => balanceService.peek(customerId) ?? balancesByCustomer.get(customerId) ?? 0,
+    [balancesByCustomer],
+  );
   const invoiceBalance = useCallback((invoiceId: string) => {
     const inv = invoiceById.get(invoiceId);
     return inv ? (Number(inv.netPayable) || 0) - (paidByInvoiceMap.get(invoiceId) || 0) : 0;
@@ -634,7 +657,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const allocationId = idempotentId("alloc", key);
     const a = makeAudit(user, "create", "invoice", invoiceId, "Created invoice");
 
-    return guardIdempotent("invoice.create", async () => {
+    return guardIdempotent("invoice.create", () => dedupePromise(invoiceCreateInFlight, key, async () => {
       // A retry after a timeout must return the saved invoice without opening
       // another transaction. This check is local, so it cannot trigger the
       // Firestore SDK's 429 retry storm on the invoice document.
@@ -666,14 +689,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const counter = (Number(st?.invoiceCounter) || 1000) + 1;
       const number = `${st?.invoicePrefix || "INV"}-${counter}`;
 
-      const result = await runTransaction(firestore, async (tx): Promise<InvoiceTxResult> => {
+      const result = await runCustomerTransaction(cust.id, "invoice.create", async (tx): Promise<InvoiceTxResult> => {
         const discountPercent = input.discountPercent !== undefined ? input.discountPercent : cust.discount;
         const discountAmount = percentOf(subtotal, discountPercent);
         const netPayable = subtotal - discountAmount;
         const received = status === "finalized" ? toPaisa(input.paymentReceived || 0) : 0;
         const balanceDue = netPayable - received;
 
-        const currentBal = await txBalance(tx, cust.id, Number(balancesByCustomer.get(cust.id) ?? cust.openingBalance) || 0);
+        const currentBal = await readBalanceInTransaction(tx, cust.id, Number(balancesByCustomer.get(cust.id) ?? cust.openingBalance) || 0, "invoice.create");
 
         const inv: Invoice = {
           id: invoiceId, number, customerId: cust.id, customerName: cust.name, customerDiscount: cust.discount,
@@ -718,10 +741,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         a.entry.entityId = inv.id;
         a.entry.details = `Created invoice ${number}`;
         tx.set(docRef("audit", a.entry.id), a.entry as any);
-        return { inv, entries, payment, allocation, settings: st ? { ...st, invoiceCounter: counter } : undefined, audit: a.entry };
+        const nextBalance = status === "finalized" ? currentBal + netPayable - received : currentBal;
+        return { inv, entries, balance: nextBalance, customerId: cust.id, payment, allocation, settings: st ? { ...st, invoiceCounter: counter } : undefined, audit: a.entry };
       });
 
       // Optimistic/persisted state update — no 12-collection refresh.
+      if (result.balance !== undefined && result.customerId) {
+        balanceService.prime(result.customerId, result.balance, "transaction");
+        balanceService.writes(result.customerId, "create-invoice");
+      }
       setInvoices((prev) => [result.inv, ...prev.filter((x) => x.id !== result.inv.id)]);
       if (result.settings) setSettings(result.settings);
       if (result.entries.length) setLedger((prev) => [...prev, ...result.entries]);
@@ -729,7 +757,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (result.allocation) setAllocations((prev) => [...prev, result.allocation!]);
       if (result.audit) setAudit((prev) => [result.audit!, ...prev]);
       return result.inv;
-    });
+    }, recordOperationDedup));
   }, [user, productById, balancesByCustomer, customerById, invoiceById, settings]);
 
   const updateInvoice = useCallback(async (inv: Invoice) => {
@@ -740,7 +768,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setAudit((prev) => [a.entry, ...prev]);
   }, [user]);
 
-  const editInvoice = useCallback(async (id: string, input: { date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; notes?: string; bonus?: boolean }) => {
+  const editInvoice = useCallback((id: string, input: { date: string; items: { productId: string; qty: number; unitPrice?: number }[]; discountPercent?: number; notes?: string; bonus?: boolean }) => dedupePromise(invoiceEditInFlight, id, async () => {
     const invItems: InvoiceItem[] = [];
     for (const it of input.items) {
       const prod = productById.get(it.productId) || await db.products.get(it.productId);
@@ -761,7 +789,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!current) throw new Error("Invoice not found. Please refresh the invoice list and try again.");
     if (current.status === "cancelled" || current.status === "void") throw new Error("Cancelled invoices cannot be edited.");
 
-    const result = await guard("invoice.edit", () => runTransaction(firestore, async (tx) => {
+    const result = await guard("invoice.edit", () => runCustomerTransaction(current.customerId, "invoice.edit", async (tx) => {
       const oldNet = Number(current.netPayable) || 0;
       const discountPercent = input.discountPercent !== undefined ? input.discountPercent : current.discountPercent;
       const discountAmount = percentOf(subtotal, discountPercent);
@@ -777,10 +805,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       tx.set(docRef("invoices", id), next as any);
 
       let adjustment: LedgerEntry | undefined;
+      let nextBalance: number | undefined;
       if (next.status === "finalized" && netPayable !== oldNet) {
         const delta = netPayable - oldNet;
-        const bal = await txBalance(tx, current.customerId, Number(balancesByCustomer.get(current.customerId) ?? current.previousBalance) || 0);
-        tx.set(balanceRef(current.customerId), { amount: bal + delta, updatedAt: isoNow() } as any);
+        const bal = await readBalanceInTransaction(tx, current.customerId, Number(balancesByCustomer.get(current.customerId) ?? current.previousBalance) || 0, "invoice.edit");
+        nextBalance = bal + delta;
+        tx.set(balanceRef(current.customerId), { amount: nextBalance, updatedAt: isoNow() } as any);
         adjustment = {
           id: uid(), customerId: current.customerId, date: input.date, type: "adjustment",
           reference: current.number, description: `Adjusted invoice ${current.number}`,
@@ -791,20 +821,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       a.entry.details = `Edited invoice ${current.number}`;
       tx.set(docRef("audit", a.entry.id), a.entry as any);
-      return { next, adjustment };
+      return { next, adjustment, balance: nextBalance, customerId: current.customerId };
     }));
 
+    if (result.balance !== undefined && result.customerId) {
+      balanceService.prime(result.customerId, result.balance, "transaction");
+      balanceService.writes(result.customerId, "edit-invoice");
+    }
     setInvoices((prev) => prev.map((x) => (x.id === id ? result.next : x)));
     if (result.adjustment) setLedger((prev) => [...prev, result.adjustment!]);
     setAudit((prev) => [a.entry, ...prev]);
     return result.next;
-  }, [user, productById, balancesByCustomer, invoiceById]);
+  }, recordOperationDedup), [user, productById, balancesByCustomer, invoiceById]);
 
   const cancelInvoice = useCallback(async (id: string) => {
     const inv = invoiceById.get(id) || await db.invoices.get(id);
     if (!inv) return;
     const a = makeAudit(user, "cancel", "invoice", id, `Cancelled invoice ${inv.number}`);
-    const nextBalance = customerBalance(inv.customerId) - (Number(inv.netPayable) || 0);
+    const currentBalance = await authoritativeBalance(inv.customerId, customerBalance(inv.customerId), "invoice.cancel");
+    const nextBalance = currentBalance - (Number(inv.netPayable) || 0);
     const adjustment: LedgerEntry = {
       id: uid(), customerId: inv.customerId, date: isoNow().slice(0, 10), type: "adjustment",
       reference: inv.number, description: `Cancelled invoice ${inv.number}`,
@@ -814,6 +849,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const next = { ...inv, status: "cancelled" as const, updatedAt: isoNow() };
     const ops = [setOp("invoices", id, next), setOp("ledger", adjustment.id, adjustment), balanceOp(inv.customerId, nextBalance), a.op];
     await guard("invoice.cancel", () => commitWrites(ops));
+    balanceService.prime(inv.customerId, nextBalance, "local");
+    balanceService.writes(inv.customerId, "cancel");
     setInvoices((prev) => prev.map((x) => (x.id === id ? next : x)));
     setLedger((prev) => [...prev, adjustment]);
     setAudit((prev) => [a.entry, ...prev]);
@@ -830,19 +867,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const remaining = entries.filter((e) => !removed.some((r) => r.id === e.id));
     const recalculated = recalculateLedgerBalances(remaining);
     const a = makeAudit(user, "delete", "invoice", id, `Deleted invoice ${inv.number}`);
-    const finalBalance = recalculated.length ? Number(recalculated[recalculated.length - 1].balance) || 0 : 0;
+    const recalculatedBalance = recalculated.length ? Number(recalculated[recalculated.length - 1].balance) || 0 : 0;
+    // Authorize against the canonical document; align the rebuilt ledger rows
+    // with it so the displayed running balance and the stored balance agree.
+    const finalBalance = await authoritativeBalance(inv.customerId, recalculatedBalance, "invoice.delete");
+    const drift = finalBalance - recalculatedBalance;
+    const synced = drift ? recalculated.map((x) => ({ ...x, balance: (Number(x.balance) || 0) + drift })) : recalculated;
     const ops: WriteOp[] = [
       ...allocs.map((x) => delOp("allocations", x.id)),
       ...removed.map((x) => delOp("ledger", x.id)),
-      ...recalculated.map((x) => setOp("ledger", x.id, x)),
+      ...synced.map((x) => setOp("ledger", x.id, x)),
       balanceOp(inv.customerId, finalBalance),
       delOp("invoices", id), a.op,
     ];
     await guard("invoice.delete", () => commitWrites(ops));
+    balanceService.prime(inv.customerId, finalBalance, "local");
+    balanceService.writes(inv.customerId, "delete-invoice");
     const allocIds = new Set(allocs.map((x) => x.id));
     setInvoices((prev) => prev.filter((x) => x.id !== id));
     setAllocations((prev) => prev.filter((x) => !allocIds.has(x.id)));
-    setLedger((prev) => [...prev.filter((x) => x.customerId !== inv.customerId), ...recalculated]);
+    setLedger((prev) => [...prev.filter((x) => x.customerId !== inv.customerId), ...synced]);
     setAudit((prev) => [a.entry, ...prev]);
   }, [user, invoiceById]);
 
@@ -854,7 +898,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const receiptNumber = `RCPT-${key.replace(/[^a-zA-Z0-9]/g, "").slice(-6).toUpperCase() || Date.now().toString().slice(-6)}`;
     const a = makeAudit(user, "create", "payment", paymentId, "Recorded payment");
 
-    return guardIdempotent("payment.record", async () => {
+    return guardIdempotent("payment.record", () => dedupePromise(paymentRecordInFlight, key, async () => {
       const amountPaisa = toPaisa(input.amount);
 
       // One query outside the transaction supplies candidate invoices; the
@@ -865,7 +909,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             .filter((i) => i.status === "finalized")
             .sort((x, y) => String(x.date).localeCompare(String(y.date)));
 
-      const result = await guard("payment.transaction", () => runTransaction(firestore, async (tx): Promise<PaymentTxResult> => {
+      // One guarded transaction only. Nesting two withTimeout/retry wrappers here
+      // started overlapping transactions on timeout, multiplying balance reads.
+      const result = await runCustomerTransaction(input.customerId, "payment.record", async (tx): Promise<PaymentTxResult> => {
         const dupSnap = await tx.get(docRef("payments", paymentId));
         if (dupSnap.exists()) return { payment: dupSnap.data() as Payment, allocations: [] };
         const custSnap = await tx.get(docRef("customers", input.customerId));
@@ -915,7 +961,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
-        const bal = await txBalance(tx, cust.id, Number(balancesByCustomer.get(cust.id) ?? cust.openingBalance) || 0);
+        const bal = await readBalanceInTransaction(tx, cust.id, Number(balancesByCustomer.get(cust.id) ?? cust.openingBalance) || 0, "payment.record");
         const entry: LedgerEntry = {
           id: entryId, customerId: cust.id, date: input.date, type: "payment", reference: receiptNumber,
           description: `Payment ${receiptNumber} (${input.method})`,
@@ -933,15 +979,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         tx.set(docRef("ledger", entry.id), entry as any);
         a.entry.details = `Recorded payment ${receiptNumber}`;
         tx.set(docRef("audit", a.entry.id), a.entry as any);
-        return { payment: pay, allocations: newAllocations, entry, audit: a.entry };
-      }));
+        return { payment: pay, allocations: newAllocations, balance: bal - amountPaisa, entry, audit: a.entry };
+      });
 
+      if (result.balance !== undefined) {
+        balanceService.prime(input.customerId, result.balance, "transaction");
+        balanceService.writes(input.customerId, "record-payment");
+      }
       setPayments((prev) => [result.payment, ...prev.filter((p) => p.id !== result.payment.id)]);
       if (result.allocations.length) setAllocations((prev) => [...prev, ...result.allocations]);
       if (result.entry) setLedger((prev) => [...prev, result.entry!]);
       if (result.audit) setAudit((prev) => [result.audit!, ...prev]);
       return result.payment;
-    });
+    }, recordOperationDedup));
   }, [user, balancesByCustomer]);
 
   const updatePayment = useCallback(async (p: Payment) => {
@@ -968,7 +1018,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const pay = payments.find((x) => x.id === id) || await db.payments.get(id);
     if (!pay) return;
     const allocs = await db.allocations.where("paymentId").equals(id).toArray();
-    const nextBalance = customerBalance(pay.customerId) + (Number(pay.amount) || 0);
+    const currentBalance = await authoritativeBalance(pay.customerId, customerBalance(pay.customerId), "payment.reverse");
+    const nextBalance = currentBalance + (Number(pay.amount) || 0);
     const adjustment: LedgerEntry = {
       id: uid(), customerId: pay.customerId, date: isoNow().slice(0, 10), type: "adjustment",
       reference: pay.receiptNumber, description: `Reversed payment ${pay.receiptNumber}`,
@@ -984,6 +1035,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       delOp("payments", id), setOp("ledger", adjustment.id, adjustment), a.op,
     ];
     await guard("payment.reverse", () => commitWrites(ops));
+    balanceService.prime(pay.customerId, nextBalance, "local");
+    balanceService.writes(pay.customerId, "reverse");
     const allocIds = new Set(allocs.map((x) => x.id));
     setPayments((prev) => prev.filter((x) => x.id !== id));
     setAllocations((prev) => prev.filter((x) => !allocIds.has(x.id)));
@@ -1005,22 +1058,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const recalculated = recalculateLedgerBalances(remaining);
     const a = makeAudit(user, "delete", "payment", id, `Deleted payment ${pay.receiptNumber}`);
     const unapply = await unapplyInvoiceOps(allocs);
-    const finalBalance = recalculated.length ? Number(recalculated[recalculated.length - 1].balance) || 0 : 0;
+    const recalculatedBalance = recalculated.length ? Number(recalculated[recalculated.length - 1].balance) || 0 : 0;
+    const finalBalance = await authoritativeBalance(pay.customerId, recalculatedBalance, "payment.delete");
+    const drift = finalBalance - recalculatedBalance;
+    const synced = drift ? recalculated.map((x) => ({ ...x, balance: (Number(x.balance) || 0) + drift })) : recalculated;
     const ops: WriteOp[] = [
       ...allocs.map((x) => delOp("allocations", x.id)),
       ...unapply,
       ...removed.map((x) => delOp("ledger", x.id)),
-      ...recalculated.map((x) => setOp("ledger", x.id, x)),
+      ...synced.map((x) => setOp("ledger", x.id, x)),
       balanceOp(pay.customerId, finalBalance),
       delOp("payments", id), a.op,
     ];
     await guard("payment.delete", () => commitWrites(ops));
+    balanceService.prime(pay.customerId, finalBalance, "local");
+    balanceService.writes(pay.customerId, "delete-payment");
     const allocIds = new Set(allocs.map((x) => x.id));
     setPayments((prev) => prev.filter((x) => x.id !== id));
     setAllocations((prev) => prev.filter((x) => !allocIds.has(x.id)));
     const updatedInvoices = new Map(unapply.filter((o) => o.type === "set").map((o) => [o.ref.id, o.data as Invoice]));
     if (updatedInvoices.size) setInvoices((prev) => prev.map((inv) => updatedInvoices.get(inv.id) || inv));
-    setLedger((prev) => [...prev.filter((x) => x.customerId !== pay.customerId), ...recalculated]);
+    setLedger((prev) => [...prev.filter((x) => x.customerId !== pay.customerId), ...synced]);
     setAudit((prev) => [a.entry, ...prev]);
   }, [user, payments]);
 

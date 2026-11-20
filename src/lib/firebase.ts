@@ -1,4 +1,5 @@
 import { noteQuotaExhausted } from "./asyncUtils";
+import { recordFirestoreCall, recordQuota } from "./firestoreDiagnostics";
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
 import { getAuth } from "firebase/auth";
@@ -9,6 +10,10 @@ import {
   type Firestore,
 } from "firebase/firestore";
 
+// The web API key is a public application identifier, not a secret. Restrict it
+// in the Firebase console to the authorized HTTP referrers (production host +
+// localhost) and to the APIs this app uses. Firestore rules (see firestore.rules)
+// remain the real authorization boundary and are never relaxed for performance.
 const firebaseConfig = {
   apiKey: "AIzaSyCjxZp-I73eKfz0KMhoBVDSBtYbK4L90zQ",
   authDomain: "ma-paint-house.firebaseapp.com",
@@ -19,15 +24,31 @@ const firebaseConfig = {
   measurementId: "G-BM95H7CZXB",
 };
 
-// Firestore retries a 429 five times internally. Remember the first quota
-// response immediately so the app's action guards can block every later click
-// while the SDK is still retrying the request that is already in flight.
+// Firestore retries a 429 five times internally (RESOURCE_EXHAUSTED is treated
+// as a transient error by the SDK's transaction runner). Remember the first
+// quota response immediately so every *new* request is blocked while the SDK
+// finishes retrying the one already in flight, and honour Retry-After.
 if (typeof window !== "undefined" && !(window as any).__maphQuotaFetchWatch) {
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const response = await originalFetch(input, init);
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (response.status === 429 && /firestore\.googleapis\.com/.test(url)) noteQuotaExhausted();
+    if (!/firestore\.googleapis\.com/.test(url)) return response;
+    recordFirestoreCall("transport.fetch");
+    if (response.status === 429) {
+      recordQuota("transport.fetch");
+      let retryAfterMs = 0;
+      try {
+        const header = response.headers?.get?.("retry-after");
+        if (header) {
+          const seconds = Number(header);
+          retryAfterMs = Number.isFinite(seconds) && seconds > 0
+            ? seconds * 1000
+            : Math.max(0, Date.parse(header) - Date.now());
+        }
+      } catch { /* header may be absent or opaque */ }
+      noteQuotaExhausted(retryAfterMs);
+    }
     return response;
   };
   (window as any).__maphQuotaFetchWatch = true;

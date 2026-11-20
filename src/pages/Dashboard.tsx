@@ -6,7 +6,7 @@ import { formatMoneyShort } from "../lib/money";
 const HERO_COLOURS = ["#f97362", "#f4b740", "#1fbf9c", "#4a8fe7", "#9b6cf2"];
 
 export default function Dashboard({ go }: { go: (p: any) => void }) {
-  const { customers, invoices, payments, balancesByCustomer } = useApp();
+  const { customers, invoices, payments, customerBalance } = useApp();
 
   const stats = useMemo(() => {
     let activeCustomers = 0;
@@ -14,8 +14,8 @@ export default function Dashboard({ go }: { go: (p: any) => void }) {
     let totalOutstanding = 0;
     for (const c of customers) {
       if (c.active) activeCustomers++;
-      // O(1) index lookup — identical to customerBalance(c.id).
-      const balance = balancesByCustomer.get(c.id) || 0;
+      // Shared balance service lookup; no Firestore read on render.
+      const balance = customerBalance(c.id);
       if (balance > 0) accountsWithBalance++;
       totalOutstanding += Math.max(0, balance);
     }
@@ -29,7 +29,7 @@ export default function Dashboard({ go }: { go: (p: any) => void }) {
     for (const p of payments) totalPayments += p.amount;
 
     return { activeCustomers, accountsWithBalance, totalOutstanding, totalInvoiced, totalPayments };
-  }, [customers, invoices, payments, balancesByCustomer]);
+  }, [customers, invoices, payments, customerBalance]);
 
   const recentInvoices = useMemo(
     () => [...invoices].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5),

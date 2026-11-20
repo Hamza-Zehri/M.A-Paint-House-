@@ -39,10 +39,14 @@ export default function InvoiceBuilder({
   const [saving, setSaving] = useState(false);
   const [lastInvoice, setLastInvoice] = useState<any>(null);
   const [draftLoaded, setDraftLoaded] = useState(false);
+  // On phones the catalogue and the invoice are separate panes. Start on the
+  // catalogue for a new invoice; editing an existing one starts on the invoice.
+  const [mobileView, setMobileView] = useState<"catalogue" | "invoice">(initial ? "invoice" : "catalogue");
   const idempotencyKey = useRef(uid());
+  const catalogueRef = useRef<HTMLElement | null>(null);
   const invoicePanelRef = useRef<HTMLElement | null>(null);
   const editing = initial;
-  const { isBusy, lock } = useActionLock();
+  const { isBusy, lockResult } = useActionLock();
 
   // Hydrate edit mode or restore an unsaved invoice draft. This runs once per
   // mount, not on every customers-array change, so background patches cannot
@@ -83,6 +87,10 @@ export default function InvoiceBuilder({
     } catch { /* storage can be unavailable in private mode */ }
   }, [initial, draftLoaded, customerId, date, lines, discountPercent, bonus, paymentReceived, notes]);
 
+  useEffect(() => {
+    setMobileView(initial ? "invoice" : "catalogue");
+  }, [initial?.id]);
+
   const deferredQuery = useDeferredValue(query);
   const customer = customerById.get(customerId);
   const effectiveDiscount = bonus ? 100 : (discountPercent !== null ? discountPercent : (customer?.discount ?? 0));
@@ -114,18 +122,36 @@ export default function InvoiceBuilder({
       }
       return [...cur, { productId: p.id, qty: 1, unitPrice: p.price }];
     });
+  };
+
+  const isPhone = () =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
+
+  const scrollPaneIntoView = (node: HTMLElement | null) => {
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    requestAnimationFrame(() => node.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
+
+  // Keep the catalogue on screen after a tap. The user explicitly opens the
+  // current invoice from the tab bar or the floating cart button.
+  const handleAddProduct = (p: Product) => {
+    addProduct(p);
+    if (isPhone()) {
+      setMobileView("catalogue");
+      toast(`Added ${p.name}. Tap Current invoice to review.`, "info");
+      return;
+    }
     toast(`Added ${p.name}`, "info");
   };
 
-  // On a phone the catalogue is shown inline above the invoice. After a tap,
-  // bring the current invoice into view so the added item is immediately clear.
-  const handleAddProduct = (p: Product) => {
-    addProduct(p);
-    if (typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches) {
-      requestAnimationFrame(() => {
-        invoicePanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
-    }
+  const showCatalogue = () => {
+    setMobileView("catalogue");
+    if (isPhone()) scrollPaneIntoView(catalogueRef.current);
+  };
+
+  const showInvoice = () => {
+    setMobileView("invoice");
+    if (isPhone()) scrollPaneIntoView(invoicePanelRef.current);
   };
 
   const updateQty = (pid: string, qty: number) =>
@@ -170,14 +196,14 @@ export default function InvoiceBuilder({
     }
   };
 
-  const handleSave = async (andShare = false) => {
+  const handleSave = async (andShare = false): Promise<Invoice | undefined> => {
     if (!customerId) {
       toast("Select a customer.", "error");
-      return;
+      return undefined;
     }
     if (lines.length === 0) {
       toast("Add at least one product.", "error");
-      return;
+      return undefined;
     }
     setSaving(true);
     try {
@@ -194,42 +220,71 @@ export default function InvoiceBuilder({
         toast(`Invoice ${inv.number} updated.`, "success");
         if (andShare) await shareInvoicePdf(inv, customer);
         onDone?.();
-      } else {
-        const inv = await createInvoice({
-          customerId,
-          date,
-          items,
-          discountPercent: effectiveDiscount,
-          paymentReceived: parseFloat(paymentReceived) || 0,
-          notes,
-          status: "finalized",
-          bonus,
-          idempotencyKey: idempotencyKey.current,
-        });
-        idempotencyKey.current = uid();
-        try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
-        setLastInvoice(inv);
-        setLines([]);
-        setPaymentReceived("");
-        setNotes("");
-        setDate(todayLocalISO());
-        toast(`Invoice ${inv.number} saved.`, "success");
-        if (andShare) await shareInvoicePdf(inv, customer);
+        return inv;
       }
+      const inv = await createInvoice({
+        customerId,
+        date,
+        items,
+        discountPercent: effectiveDiscount,
+        paymentReceived: parseFloat(paymentReceived) || 0,
+        notes,
+        status: "finalized",
+        bonus,
+        idempotencyKey: idempotencyKey.current,
+      });
+      idempotencyKey.current = uid();
+      try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
+      setLastInvoice(inv);
+      setLines([]);
+      setMobileView("catalogue");
+      setPaymentReceived("");
+      setNotes("");
+      setDate(todayLocalISO());
+      toast(`Invoice ${inv.number} saved.`, "success");
+      if (andShare) await shareInvoicePdf(inv, customer);
+      return inv;
     } catch (e: any) {
       toast(e?.message || "Could not save the invoice.", "error");
+      return undefined;
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   return (
     <div className="invoice-container">
-      {/* Real two-column layout: Left 45% (Product Catalogue), Right 55% (Current Invoice) */}
-      <div className="invoice-layout">
+      {/* Phone-only pane switcher. Desktop keeps the original two-column view. */}
+      <div className="invoice-mobile-tabs" role="tablist" aria-label="Invoice sections">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mobileView === "catalogue"}
+          className={`invoice-tab-btn ${mobileView === "catalogue" ? "active" : ""}`}
+          onClick={showCatalogue}
+        >
+          <Icon name="box" size={15} />
+          Products
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mobileView === "invoice"}
+          className={`invoice-tab-btn ${mobileView === "invoice" ? "active" : ""}`}
+          onClick={showInvoice}
+        >
+          <Icon name="receipt" size={15} />
+          Current invoice
+          <span className="invoice-tab-badge">{lines.length}</span>
+        </button>
+      </div>
+
+      {/* Desktop: two columns. Phone: one pane at a time, selected above. */}
+      <div className="invoice-layout" data-mobile-view={mobileView}>
         {/* ========================================================= */}
         {/* LEFT PANEL – PRODUCT CATALOGUE (45%)                      */}
         {/* ========================================================= */}
-        <section className="catalogue">
+        <section className="catalogue" ref={catalogueRef}>
           <div className="catalogue-head">
             <div>
               <h2>Product catalogue</h2>
@@ -327,6 +382,12 @@ export default function InvoiceBuilder({
         {/* RIGHT PANEL – CURRENT INVOICE (55%)                       */}
         {/* ========================================================= */}
         <aside className="invoice-panel" ref={invoicePanelRef}>
+          <div className="invoice-mobile-back-row">
+            <button type="button" className="invoice-mobile-back-btn" onClick={showCatalogue}>
+              <Icon name="arrow" size={14} />
+              Add more products
+            </button>
+          </div>
           <div className="invoice-top-pane">
             <div className="invoice-top">
               <div>
@@ -555,7 +616,7 @@ export default function InvoiceBuilder({
                 type="button"
                 className="btn btn-primary"
                 disabled={saving || isBusy("save-invoice")}
-                onClick={() => lock("save-invoice", () => handleSave(false))}
+                onClick={() => { void lockResult("save-invoice", () => handleSave(false)); }}
               >
                 <Icon name="check" size={15} />
                 <span>
@@ -569,8 +630,8 @@ export default function InvoiceBuilder({
               <button
                 type="button"
                 className="btn btn-whatsapp"
-                disabled={saving || isBusy("save-share")}
-                onClick={() => lock("save-share", () => handleSave(true))}
+                disabled={saving || isBusy("save-invoice")}
+                onClick={() => { void lockResult("save-invoice", () => handleSave(true)); }}
               >
                 <Icon name="share" size={15} />
                 <span>{editing ? "Update & WhatsApp" : "Save & WhatsApp"}</span>
@@ -613,6 +674,22 @@ export default function InvoiceBuilder({
           </div>
         </aside>
       </div>
+
+      {mobileView === "catalogue" && lines.length > 0 && (
+        <button type="button" className="invoice-floating-cart" onClick={showInvoice}>
+          <span className="floating-cart-summary">
+            <span className="floating-cart-badge">{lines.length}</span>
+            <span>
+              <b>Current invoice</b>
+              <small>{formatMoneyShort(netPayable)}</small>
+            </span>
+          </span>
+          <span className="floating-cart-btn">
+            View invoice
+            <Icon name="arrow" size={14} />
+          </span>
+        </button>
+      )}
     </div>
   );
 }

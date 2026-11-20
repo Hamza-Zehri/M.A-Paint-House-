@@ -5389,3 +5389,64 @@ footer span {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 }
+
+/* ── Phone invoice: one active pane at a time ───────────────────────────── */
+.invoice-mobile-back-row {
+  display: none;
+  margin-bottom: 10px;
+}
+
+.invoice-mobile-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid #cce8e3;
+  border-radius: 8px;
+  background: #edf7f5;
+  color: var(--teal);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.invoice-mobile-back-btn svg {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 768px) {
+  .invoice-mobile-tabs {
+    display: flex !important;
+    top: 60px;
+    z-index: 30;
+  }
+
+  .invoice-layout[data-mobile-view="catalogue"] > .invoice-panel,
+  .invoice-layout[data-mobile-view="invoice"] > .catalogue {
+    display: none !important;
+  }
+
+  .invoice-layout[data-mobile-view="catalogue"] > .catalogue {
+    display: block !important;
+    border-bottom: none !important;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom)) !important;
+  }
+
+  .invoice-layout[data-mobile-view="invoice"] > .invoice-panel {
+    display: block !important;
+  }
+
+  .invoice-layout > .catalogue,
+  .invoice-layout > .invoice-panel {
+    scroll-margin-top: 118px !important;
+  }
+
+  .invoice-mobile-back-row {
+    display: flex !important;
+  }
+
+  .invoice-floating-cart {
+    display: flex !important;
+    bottom: calc(var(--mobile-nav-height) + 10px) !important;
+  }
+}
